@@ -45,11 +45,11 @@ class FrankaCubeLiftEnvCfg(LiftEnvCfg):
 
         # Set Cube as object
         self.scene.object = RigidObjectCfg(
-            prim_path="{ENV_REGEX_NS}/Object",
+            prim_path="{ENV_REGEX_NS}/c_lego_duplo",
             init_state=RigidObjectCfg.InitialStateCfg(pos=[0.5, 0, 0.055], rot=[1, 0, 0, 0]),
             spawn=UsdFileCfg(
-                usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/DexCube/dex_cube_instanceable.usd",
-                scale=(0.8, 0.8, 0.8),
+                usd_path=f"props/c_lego_duplo.usd",
+                scale=(1.0, 1.0, 1.0),
                 rigid_props=RigidBodyPropertiesCfg(
                     solver_position_iteration_count=16,
                     solver_velocity_iteration_count=1,

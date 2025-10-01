@@ -13,6 +13,7 @@ from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import FrameTransformerCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg, UsdFileCfg
@@ -160,6 +161,107 @@ class TerminationsCfg:
     success = DoneTerm(func=mdp.cubes_stacked)
 
 
+from isaaclab.managers import RewardTermCfg as RewTerm, SceneEntityCfg
+from isaaclab.utils import configclass
+from . import mdp  # already present in your file
+
+
+@configclass
+class RewardsCfg:
+    """Reward terms for the stacking MDP (mdp-only, no command manager)."""
+
+    # ========= Stage 1: stack cube_2 onto cube_1 =========
+
+    # End-effector reaches cube_2
+    reach_cube_2 = RewTerm(
+        func=mdp.object_ee_distance,
+        params={
+            "std": 0.10,
+            "object_cfg": SceneEntityCfg("cube_2"),
+            # ee_frame_cfg is optional; mdp.object_ee_distance has a default SceneEntityCfg("ee_frame")
+        },
+        weight=1.0,
+    )
+
+    # Grasp cube_2 (uses your mdp.object_grasped signature with robot & ee_frame)
+    grasp_cube_2 = RewTerm(
+        func=mdp.object_grasped,
+        params={
+            "robot_cfg": SceneEntityCfg("robot"),
+            "ee_frame_cfg": SceneEntityCfg("ee_frame"),
+            "object_cfg": SceneEntityCfg("cube_2"),
+        },
+        weight=3.0,
+    )
+
+    # Lift cube_2 off the table
+    lift_cube_2 = RewTerm(
+        func=mdp.object_is_lifted,
+        params={
+            "minimal_height": 0.03,  # adjust if your table/block geometry needs more clearance
+            "object_cfg": SceneEntityCfg("cube_2"),
+        },
+        weight=5.0,
+    )
+
+    # Binary reward when cube_2 is stacked on cube_1 (you already use this in observations)
+    stack_2_on_1 = RewTerm(
+        func=mdp.object_stacked,
+        params={
+            "robot_cfg": SceneEntityCfg("robot"),  # if unused inside, it’s harmless
+            "upper_object_cfg": SceneEntityCfg("cube_2"),
+            "lower_object_cfg": SceneEntityCfg("cube_1"),
+        },
+        weight=15.0,
+    )
+
+    # # ========= Stage 2: stack cube_3 onto cube_2 (optional) =========
+    # # If you start with only 2 cubes, delete or comment this block.
+
+    # reach_cube_3 = RewTerm(
+    #     func=mdp.object_ee_distance,
+    #     params={"std": 0.10, "object_cfg": SceneEntityCfg("cube_3")},
+    #     weight=0.75,
+    # )
+
+    # grasp_cube_3 = RewTerm(
+    #     func=mdp.object_grasped,
+    #     params={
+    #         "robot_cfg": SceneEntityCfg("robot"),
+    #         "ee_frame_cfg": SceneEntityCfg("ee_frame"),
+    #         "object_cfg": SceneEntityCfg("cube_3"),
+    #     },
+    #     weight=2.0,
+    # )
+
+    # lift_cube_3 = RewTerm(
+    #     func=mdp.object_is_lifted,
+    #     params={"minimal_height": 0.03, "object_cfg": SceneEntityCfg("cube_3")},
+    #     weight=3.0,
+    # )
+
+    # stack_3_on_2 = RewTerm(
+    #     func=mdp.object_stacked,
+    #     params={
+    #         "robot_cfg": SceneEntityCfg("robot"),
+    #         "upper_object_cfg": SceneEntityCfg("cube_3"),
+    #         "lower_object_cfg": SceneEntityCfg("cube_2"),
+    #     },
+    #     weight=10.0,
+    # )
+
+    # # ========= Regularization =========
+
+    # action_rate = RewTerm(func=mdp.action_rate_l2, weight=-1e-4)
+
+    # joint_vel = RewTerm(
+    #     func=mdp.joint_vel_l2,
+    #     params={"asset_cfg": SceneEntityCfg("robot")},
+    #     weight=-1e-4,
+    # )
+
+
+
 @configclass
 class StackEnvCfg(ManagerBasedRLEnvCfg):
     """Configuration for the stacking environment."""
@@ -172,9 +274,11 @@ class StackEnvCfg(ManagerBasedRLEnvCfg):
     # MDP settings
     terminations: TerminationsCfg = TerminationsCfg()
 
+    rewards: RewardsCfg = RewardsCfg()
+
     # Unused managers
     commands = None
-    rewards = None
+    # rewards = None
     events = None
     curriculum = None
 
@@ -195,5 +299,5 @@ class StackEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.physx.bounce_threshold_velocity = 0.2
         self.sim.physx.bounce_threshold_velocity = 0.01
         self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 1024 * 1024 * 4
-        self.sim.physx.gpu_total_aggregate_pairs_capacity = 16 * 1024
+        self.sim.physx.gpu_total_aggregate_pairs_capacity = 4 * 16 * 1024
         self.sim.physx.friction_correlation_distance = 0.00625
