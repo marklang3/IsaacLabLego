@@ -104,36 +104,37 @@ class FrankaCubeStackEnvCfg(StackEnvCfg):
 
         # Set each stacking cube deterministically
         self.scene.cube_1 = RigidObjectCfg(
-            prim_path="{ENV_REGEX_NS}/c_lego_duplo",
-            init_state=RigidObjectCfg.InitialStateCfg(pos=[0.4, 0.0, 0.0203], rot=[1, 0, 0, 0]),
+            prim_path="{ENV_REGEX_NS}/c_lego_duplo_1",   
+            init_state=RigidObjectCfg.InitialStateCfg(pos=[0.40,  0.00, 0.0203], rot=[1, 0, 0, 0]),
             spawn=UsdFileCfg(
-                usd_path=f"props/c_lego_duplo.usd",
+                usd_path="props/c_lego_duplo.usd",
                 scale=(1.0, 1.0, 1.0),
                 rigid_props=cube_properties,
-                # semantic_tags=[("class", "cube_1")],
+                semantic_tags=[("class", "cube_1")],
             ),
         )
-        # self.scene.cube_2 = RigidObjectCfg(
-        #     prim_path="{ENV_REGEX_NS}/Cube_2",
-        #     init_state=RigidObjectCfg.InitialStateCfg(pos=[0.55, 0.05, 0.0203], rot=[1, 0, 0, 0]),
-        #     spawn=UsdFileCfg(
-        #         usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/red_block.usd",
-        #         scale=(1.0, 1.0, 1.0),
-        #         rigid_props=cube_properties,
-        #         semantic_tags=[("class", "cube_2")],
-        #     ),
-        # )
-        # self.scene.cube_3 = RigidObjectCfg(
-        #     prim_path="{ENV_REGEX_NS}/Cube_3",
-        #     init_state=RigidObjectCfg.InitialStateCfg(pos=[0.60, -0.1, 0.0203], rot=[1, 0, 0, 0]),
-        #     spawn=UsdFileCfg(
-        #         usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/green_block.usd",
-        #         scale=(1.0, 1.0, 1.0),
-        #         rigid_props=cube_properties,
-        #         semantic_tags=[("class", "cube_3")],
-        #     ),
-        # )
 
+        self.scene.cube_2 = RigidObjectCfg(
+            prim_path="{ENV_REGEX_NS}/c_lego_duplo_2",   
+            init_state=RigidObjectCfg.InitialStateCfg(pos=[0.55,  0.05, 0.0203], rot=[1, 0, 0, 0]),
+            spawn=UsdFileCfg(
+                usd_path="props/c_lego_duplo.usd",
+                scale=(1.0, 1.0, 1.0),
+                rigid_props=cube_properties,
+                semantic_tags=[("class", "cube_2")],
+            ),
+        )
+
+        self.scene.cube_3 = RigidObjectCfg(
+            prim_path="{ENV_REGEX_NS}/c_lego_duplo_3",  
+            init_state=RigidObjectCfg.InitialStateCfg(pos=[0.60, -0.10, 0.0203], rot=[1, 0, 0, 0]),
+            spawn=UsdFileCfg(
+                usd_path="props/c_lego_duplo.usd",
+                scale=(1.0, 1.0, 1.0),
+                rigid_props=cube_properties,
+                semantic_tags=[("class", "cube_3")],
+            ),
+        )
         # Listens to the required transforms
         marker_cfg = FRAME_MARKER_CFG.copy()
         marker_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)

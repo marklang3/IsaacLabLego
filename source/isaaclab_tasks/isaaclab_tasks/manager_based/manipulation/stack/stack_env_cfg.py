@@ -90,8 +90,8 @@ class ObservationsCfg:
         gripper_pos = ObsTerm(func=mdp.gripper_pos)
 
         def __post_init__(self):
-            self.enable_corruption = False
-            self.concatenate_terms = False
+            self.enable_corruption = True
+            self.concatenate_terms = True
 
     @configclass
     class RGBCameraPolicyCfg(ObsGroup):
@@ -136,8 +136,8 @@ class ObservationsCfg:
 
     # observation groups
     policy: PolicyCfg = PolicyCfg()
-    rgb_camera: RGBCameraPolicyCfg = RGBCameraPolicyCfg()
-    subtask_terms: SubtaskCfg = SubtaskCfg()
+    # rgb_camera: RGBCameraPolicyCfg = RGBCameraPolicyCfg()
+    # subtask_terms: SubtaskCfg = SubtaskCfg()
 
 
 @configclass
@@ -166,99 +166,69 @@ from isaaclab.utils import configclass
 from . import mdp  # already present in your file
 
 
+from isaaclab.managers import RewardTermCfg as RewTerm, SceneEntityCfg
+from isaaclab.utils import configclass
+from . import mdp  # stack.mdp (now exporting the four helpers)
+
+
 @configclass
 class RewardsCfg:
-    """Reward terms for the stacking MDP (mdp-only, no command manager)."""
+    """Reward terms for stacking using only mdp.object_ee_distance, mdp.object_is_lifted,
+    mdp.horizontal_alignment, and mdp.object_stability (plus regularization).
+    Targets stacking cube_2 onto cube_1.
+    """
 
-    # ========= Stage 1: stack cube_2 onto cube_1 =========
-
-    # End-effector reaches cube_2
+    # --- Reach the stack cube (cube_2) with the end-effector ---
     reach_cube_2 = RewTerm(
         func=mdp.object_ee_distance,
         params={
             "std": 0.10,
             "object_cfg": SceneEntityCfg("cube_2"),
-            # ee_frame_cfg is optional; mdp.object_ee_distance has a default SceneEntityCfg("ee_frame")
+            # Uses default ee_frame_cfg=SceneEntityCfg("ee_frame") inside the function
         },
         weight=1.0,
     )
 
-    # Grasp cube_2 (uses your mdp.object_grasped signature with robot & ee_frame)
-    grasp_cube_2 = RewTerm(
-        func=mdp.object_grasped,
-        params={
-            "robot_cfg": SceneEntityCfg("robot"),
-            "ee_frame_cfg": SceneEntityCfg("ee_frame"),
-            "object_cfg": SceneEntityCfg("cube_2"),
-        },
-        weight=3.0,
-    )
-
-    # Lift cube_2 off the table
+    # --- Lift cube_2 off the table ---
     lift_cube_2 = RewTerm(
         func=mdp.object_is_lifted,
         params={
-            "minimal_height": 0.03,  # adjust if your table/block geometry needs more clearance
+            "minimal_height": 0.03,             # adjust if your table/block geometry needs more clearance
             "object_cfg": SceneEntityCfg("cube_2"),
         },
         weight=5.0,
     )
 
-    # Binary reward when cube_2 is stacked on cube_1 (you already use this in observations)
-    stack_2_on_1 = RewTerm(
-        func=mdp.object_stacked,
+    # --- Align cube_2 horizontally above cube_1 (XY) ---
+    align_2_over_1 = RewTerm(
+        func=mdp.horizontal_alignment,
         params={
-            "robot_cfg": SceneEntityCfg("robot"),  # if unused inside, it’s harmless
-            "upper_object_cfg": SceneEntityCfg("cube_2"),
-            "lower_object_cfg": SceneEntityCfg("cube_1"),
+            "src_asset_cfg": SceneEntityCfg("cube_2"),
+            "tgt_asset_cfg": SceneEntityCfg("cube_1"),
+            "std": 0.06,                        # ~6 cm Gaussian width
         },
-        weight=15.0,
+        weight=8.0,
     )
 
-    # # ========= Stage 2: stack cube_3 onto cube_2 (optional) =========
-    # # If you start with only 2 cubes, delete or comment this block.
+    # --- Encourage stable (low-velocity) placement of cube_2 ---
+    stability_2 = RewTerm(
+        func=mdp.object_stability,
+        params={
+            "object_cfg": SceneEntityCfg("cube_2"),
+            "lin_vel_thr": 0.05,
+            "ang_vel_thr": 0.2,
+        },
+        weight=2.0,
+    )
 
-    # reach_cube_3 = RewTerm(
-    #     func=mdp.object_ee_distance,
-    #     params={"std": 0.10, "object_cfg": SceneEntityCfg("cube_3")},
-    #     weight=0.75,
-    # )
+    # --- Regularization ---
+    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-1e-4)
 
-    # grasp_cube_3 = RewTerm(
-    #     func=mdp.object_grasped,
-    #     params={
-    #         "robot_cfg": SceneEntityCfg("robot"),
-    #         "ee_frame_cfg": SceneEntityCfg("ee_frame"),
-    #         "object_cfg": SceneEntityCfg("cube_3"),
-    #     },
-    #     weight=2.0,
-    # )
-
-    # lift_cube_3 = RewTerm(
-    #     func=mdp.object_is_lifted,
-    #     params={"minimal_height": 0.03, "object_cfg": SceneEntityCfg("cube_3")},
-    #     weight=3.0,
-    # )
-
-    # stack_3_on_2 = RewTerm(
-    #     func=mdp.object_stacked,
-    #     params={
-    #         "robot_cfg": SceneEntityCfg("robot"),
-    #         "upper_object_cfg": SceneEntityCfg("cube_3"),
-    #         "lower_object_cfg": SceneEntityCfg("cube_2"),
-    #     },
-    #     weight=10.0,
-    # )
-
-    # # ========= Regularization =========
-
-    # action_rate = RewTerm(func=mdp.action_rate_l2, weight=-1e-4)
-
-    # joint_vel = RewTerm(
-    #     func=mdp.joint_vel_l2,
-    #     params={"asset_cfg": SceneEntityCfg("robot")},
-    #     weight=-1e-4,
-    # )
+    joint_vel = RewTerm(
+        func=mdp.joint_vel_l2,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+        weight=-1e-4,
+    )
 
 
 
@@ -299,5 +269,5 @@ class StackEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.physx.bounce_threshold_velocity = 0.2
         self.sim.physx.bounce_threshold_velocity = 0.01
         self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 1024 * 1024 * 4
-        self.sim.physx.gpu_total_aggregate_pairs_capacity = 4 * 16 * 1024
+        self.sim.physx.gpu_total_aggregate_pairs_capacity = 16 * 16 * 1024
         self.sim.physx.friction_correlation_distance = 0.00625
