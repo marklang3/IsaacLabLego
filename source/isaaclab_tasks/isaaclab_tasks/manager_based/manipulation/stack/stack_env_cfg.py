@@ -14,6 +14,7 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import FrameTransformerCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg, UsdFileCfg
@@ -77,7 +78,7 @@ class ObservationsCfg:
 
     @configclass
     class PolicyCfg(ObsGroup):
-        """Observations for policy group with state values."""
+        """Observations for policy group - revert to working observations."""
 
         actions = ObsTerm(func=mdp.last_action)
         joint_pos = ObsTerm(func=mdp.joint_pos_rel)
@@ -161,75 +162,77 @@ class TerminationsCfg:
     success = DoneTerm(func=mdp.cubes_stacked)
 
 
-from isaaclab.managers import RewardTermCfg as RewTerm, SceneEntityCfg
-from isaaclab.utils import configclass
-from . import mdp  # already present in your file
-
-
-from isaaclab.managers import RewardTermCfg as RewTerm, SceneEntityCfg
-from isaaclab.utils import configclass
-from . import mdp  # stack.mdp (now exporting the four helpers)
-
-
 @configclass
 class RewardsCfg:
-    """Reward terms for stacking using only mdp.object_ee_distance, mdp.object_is_lifted,
-    mdp.horizontal_alignment, and mdp.object_stability (plus regularization).
-    Targets stacking cube_2 onto cube_1.
-    """
+    """Reward structure matching lift task pattern with goal tracking."""
 
-    # --- Reach the stack cube (cube_2) with the end-effector ---
-    reach_cube_2 = RewTerm(
+    # Phase 1: Reach cube_2 (like lift task)
+    reaching_object = RewTerm(
         func=mdp.object_ee_distance,
         params={
-            "std": 0.10,
+            "std": 0.1,
             "object_cfg": SceneEntityCfg("cube_2"),
-            # Uses default ee_frame_cfg=SceneEntityCfg("ee_frame") inside the function
+            "ee_frame_cfg": SceneEntityCfg("ee_frame"),
         },
         weight=1.0,
     )
 
-    # --- Lift cube_2 off the table ---
-    lift_cube_2 = RewTerm(
+    # Phase 2: Lift cube_2 (like lift task)
+    lifting_object = RewTerm(
         func=mdp.object_is_lifted,
         params={
-            "minimal_height": 0.03,             # adjust if your table/block geometry needs more clearance
+            "minimal_height": 0.04,
             "object_cfg": SceneEntityCfg("cube_2"),
         },
-        weight=5.0,
+        weight=15.0,
     )
 
-    # --- Align cube_2 horizontally above cube_1 (XY) ---
-    align_2_over_1 = RewTerm(
-        func=mdp.horizontal_alignment,
+    # Phase 3: Move cube_2 toward cube_1 position (ONLY when lifted - like goal tracking in lift)
+    # This gives the agent a reason to MAINTAIN the grasp
+    object_goal_tracking = RewTerm(
+        func=mdp.cube_to_cube_distance_when_lifted,
         params={
-            "src_asset_cfg": SceneEntityCfg("cube_2"),
-            "tgt_asset_cfg": SceneEntityCfg("cube_1"),
-            "std": 0.06,                        # ~6 cm Gaussian width
+            "std": 0.3,
+            "minimal_height": 0.04,
+            "src_cfg": SceneEntityCfg("cube_2"),
+            "tgt_cfg": SceneEntityCfg("cube_1"),
         },
-        weight=8.0,
+        weight=16.0,  # Same as lift task
     )
 
-    # --- Encourage stable (low-velocity) placement of cube_2 ---
-    stability_2 = RewTerm(
-        func=mdp.object_stability,
+    # Phase 4: Fine-grained goal tracking (like lift task)
+    object_goal_tracking_fine = RewTerm(
+        func=mdp.cube_to_cube_distance_when_lifted,
         params={
-            "object_cfg": SceneEntityCfg("cube_2"),
-            "lin_vel_thr": 0.05,
-            "ang_vel_thr": 0.2,
+            "std": 0.05,
+            "minimal_height": 0.04,
+            "src_cfg": SceneEntityCfg("cube_2"),
+            "tgt_cfg": SceneEntityCfg("cube_1"),
         },
-        weight=2.0,
+        weight=5.0,  # Same as lift task
     )
 
-    # --- Regularization ---
+    # Penalties
     action_rate = RewTerm(func=mdp.action_rate_l2, weight=-1e-4)
 
     joint_vel = RewTerm(
         func=mdp.joint_vel_l2,
-        params={"asset_cfg": SceneEntityCfg("robot")},
         weight=-1e-4,
+        params={"asset_cfg": SceneEntityCfg("robot")},
     )
 
+
+@configclass
+class CurriculumCfg:
+    """Curriculum terms for the MDP - match lift task exactly."""
+
+    action_rate = CurrTerm(
+        func=mdp.modify_reward_weight, params={"term_name": "action_rate", "weight": -1e-1, "num_steps": 10000}
+    )
+
+    joint_vel = CurrTerm(
+        func=mdp.modify_reward_weight, params={"term_name": "joint_vel", "weight": -1e-1, "num_steps": 10000}
+    )
 
 
 @configclass
@@ -246,11 +249,12 @@ class StackEnvCfg(ManagerBasedRLEnvCfg):
 
     rewards: RewardsCfg = RewardsCfg()
 
+    # Enable curriculum to allow free exploration early on
+    curriculum: CurriculumCfg = CurriculumCfg()
+
     # Unused managers
     commands = None
-    # rewards = None
     events = None
-    curriculum = None
 
     xr: XrCfg = XrCfg(
         anchor_pos=(-0.1, -0.5, -1.05),
@@ -260,14 +264,16 @@ class StackEnvCfg(ManagerBasedRLEnvCfg):
     def __post_init__(self):
         """Post initialization."""
         # general settings
-        self.decimation = 5
-        self.episode_length_s = 30.0
+        self.decimation = 2
+        self.episode_length_s = 15.0  # Middle ground between 5s (lift) and 30s (original stack)
         # simulation settings
         self.sim.dt = 0.01  # 100Hz
-        self.sim.render_interval = 2
+        self.sim.render_interval = self.decimation
 
+        # Enhanced PhysX settings for stability
         self.sim.physx.bounce_threshold_velocity = 0.2
         self.sim.physx.bounce_threshold_velocity = 0.01
         self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 1024 * 1024 * 4
         self.sim.physx.gpu_total_aggregate_pairs_capacity = 16 * 16 * 1024
+        self.sim.physx.gpu_max_rigid_patch_count = 2**18  # Increased from default 5 * 2**15 to handle more contacts
         self.sim.physx.friction_correlation_distance = 0.00625
