@@ -1,4 +1,4 @@
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
@@ -11,10 +11,9 @@ from isaaclab.devices.openxr import XrCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
+from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
-from isaaclab.managers import RewardTermCfg as RewTerm
-from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors.frame_transformer.frame_transformer_cfg import FrameTransformerCfg
 from isaaclab.sim.spawners.from_files.from_files_cfg import GroundPlaneCfg, UsdFileCfg
@@ -78,7 +77,7 @@ class ObservationsCfg:
 
     @configclass
     class PolicyCfg(ObsGroup):
-        """Observations for policy group - revert to working observations."""
+        """Observations for policy group with state values."""
 
         actions = ObsTerm(func=mdp.last_action)
         joint_pos = ObsTerm(func=mdp.joint_pos_rel)
@@ -94,51 +93,144 @@ class ObservationsCfg:
             self.enable_corruption = True
             self.concatenate_terms = True
 
-    @configclass
-    class RGBCameraPolicyCfg(ObsGroup):
-        """Observations for policy group with RGB images."""
-
-        def __post_init__(self):
-            self.enable_corruption = False
-            self.concatenate_terms = False
-
-    @configclass
-    class SubtaskCfg(ObsGroup):
-        """Observations for subtask group."""
-
-        grasp_1 = ObsTerm(
-            func=mdp.object_grasped,
-            params={
-                "robot_cfg": SceneEntityCfg("robot"),
-                "ee_frame_cfg": SceneEntityCfg("ee_frame"),
-                "object_cfg": SceneEntityCfg("cube_2"),
-            },
-        )
-        stack_1 = ObsTerm(
-            func=mdp.object_stacked,
-            params={
-                "robot_cfg": SceneEntityCfg("robot"),
-                "upper_object_cfg": SceneEntityCfg("cube_2"),
-                "lower_object_cfg": SceneEntityCfg("cube_1"),
-            },
-        )
-        grasp_2 = ObsTerm(
-            func=mdp.object_grasped,
-            params={
-                "robot_cfg": SceneEntityCfg("robot"),
-                "ee_frame_cfg": SceneEntityCfg("ee_frame"),
-                "object_cfg": SceneEntityCfg("cube_3"),
-            },
-        )
-
-        def __post_init__(self):
-            self.enable_corruption = False
-            self.concatenate_terms = False
-
     # observation groups
     policy: PolicyCfg = PolicyCfg()
-    # rgb_camera: RGBCameraPolicyCfg = RGBCameraPolicyCfg()
-    # subtask_terms: SubtaskCfg = SubtaskCfg()
+
+
+@configclass
+class RewardsCfg:
+    """Reward terms for the MDP."""
+
+    # Task 1: Reach and grasp cube_2
+    reaching_cube_2 = RewTerm(
+        func=mdp.object_ee_distance,
+        params={"std": 0.1, "object_cfg": SceneEntityCfg("cube_2")},
+        weight=1.0,
+    )
+
+    grasping_cube_2 = RewTerm(
+        func=mdp.object_is_grasped,
+        params={
+            "robot_cfg": SceneEntityCfg("robot"),
+            "ee_frame_cfg": SceneEntityCfg("ee_frame"),
+            "object_cfg": SceneEntityCfg("cube_2"),
+        },
+        weight=5.0,
+    )
+
+    lifting_cube_2 = RewTerm(
+        func=mdp.object_is_lifted,
+        params={"minimal_height": 0.04, "object_cfg": SceneEntityCfg("cube_2")},
+        weight=10.0,
+    )
+
+    # Task 2: Stack cube_2 on cube_3
+    aligning_cube_2_over_cube_3_xy = RewTerm(
+        func=mdp.object_goal_distance_xy,
+        params={"std": 0.1, "upper_object_cfg": SceneEntityCfg("cube_2"), "lower_object_cfg": SceneEntityCfg("cube_3")},
+        weight=3.0,
+    )
+
+    cube_2_above_cube_3 = RewTerm(
+        func=mdp.object_above_object,
+        params={
+            "minimal_height": 0.04,
+            "upper_object_cfg": SceneEntityCfg("cube_2"),
+            "lower_object_cfg": SceneEntityCfg("cube_3"),
+        },
+        weight=5.0,
+    )
+
+    stacking_cube_2_on_cube_3 = RewTerm(
+        func=mdp.object_stacked,
+        params={
+            "robot_cfg": SceneEntityCfg("robot"),
+            "upper_object_cfg": SceneEntityCfg("cube_2"),
+            "lower_object_cfg": SceneEntityCfg("cube_3"),
+            "xy_threshold": 0.05,
+            "height_threshold": 0.01,
+            "height_diff": 0.0468,
+        },
+        weight=20.0,
+    )
+
+    # Task 3: Reach and grasp cube_1
+    reaching_cube_1 = RewTerm(
+        func=mdp.object_ee_distance,
+        params={"std": 0.1, "object_cfg": SceneEntityCfg("cube_1")},
+        weight=1.0,
+    )
+
+    grasping_cube_1 = RewTerm(
+        func=mdp.object_is_grasped,
+        params={
+            "robot_cfg": SceneEntityCfg("robot"),
+            "ee_frame_cfg": SceneEntityCfg("ee_frame"),
+            "object_cfg": SceneEntityCfg("cube_1"),
+        },
+        weight=5.0,
+    )
+
+    lifting_cube_1 = RewTerm(
+        func=mdp.object_is_lifted,
+        params={"minimal_height": 0.04, "object_cfg": SceneEntityCfg("cube_1")},
+        weight=10.0,
+    )
+
+    # Task 4: Stack cube_1 on cube_2
+    aligning_cube_1_over_cube_2_xy = RewTerm(
+        func=mdp.object_goal_distance_xy,
+        params={"std": 0.1, "upper_object_cfg": SceneEntityCfg("cube_1"), "lower_object_cfg": SceneEntityCfg("cube_2")},
+        weight=3.0,
+    )
+
+    cube_1_above_cube_2 = RewTerm(
+        func=mdp.object_above_object,
+        params={
+            "minimal_height": 0.04,
+            "upper_object_cfg": SceneEntityCfg("cube_1"),
+            "lower_object_cfg": SceneEntityCfg("cube_2"),
+        },
+        weight=5.0,
+    )
+
+    stacking_cube_1_on_cube_2 = RewTerm(
+        func=mdp.object_stacked,
+        params={
+            "robot_cfg": SceneEntityCfg("robot"),
+            "upper_object_cfg": SceneEntityCfg("cube_1"),
+            "lower_object_cfg": SceneEntityCfg("cube_2"),
+            "xy_threshold": 0.05,
+            "height_threshold": 0.01,
+            "height_diff": 0.0468,
+        },
+        weight=20.0,
+    )
+
+    # Orientation alignment rewards (important for lego brick studs)
+    orientation_alignment_2_3 = RewTerm(
+        func=mdp.object_orientation_alignment,
+        params={"std": 0.5, "upper_object_cfg": SceneEntityCfg("cube_2"), "lower_object_cfg": SceneEntityCfg("cube_3")},
+        weight=2.0,
+    )
+
+    orientation_alignment_1_2 = RewTerm(
+        func=mdp.object_orientation_alignment,
+        params={"std": 0.5, "upper_object_cfg": SceneEntityCfg("cube_1"), "lower_object_cfg": SceneEntityCfg("cube_2")},
+        weight=2.0,
+    )
+
+    # Overall progress reward
+    stacking_progress = RewTerm(func=mdp.stacking_progress, weight=15.0)
+
+    # Action penalties for smooth motion
+    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-1e-4)
+
+    joint_vel = RewTerm(
+        func=mdp.joint_vel_l2,
+        weight=-1e-4,
+        params={"asset_cfg": SceneEntityCfg("robot")},
+    )
 
 
 @configclass
@@ -163,79 +255,6 @@ class TerminationsCfg:
 
 
 @configclass
-class RewardsCfg:
-    """Reward structure matching lift task pattern with goal tracking."""
-
-    # Phase 1: Reach cube_2 (like lift task)
-    reaching_object = RewTerm(
-        func=mdp.object_ee_distance,
-        params={
-            "std": 0.1,
-            "object_cfg": SceneEntityCfg("cube_2"),
-            "ee_frame_cfg": SceneEntityCfg("ee_frame"),
-        },
-        weight=1.0,
-    )
-
-    # Phase 2: Lift cube_2 (like lift task)
-    lifting_object = RewTerm(
-        func=mdp.object_is_lifted,
-        params={
-            "minimal_height": 0.04,
-            "object_cfg": SceneEntityCfg("cube_2"),
-        },
-        weight=15.0,
-    )
-
-    # Phase 3: Move cube_2 toward cube_1 position (ONLY when lifted - like goal tracking in lift)
-    # This gives the agent a reason to MAINTAIN the grasp
-    object_goal_tracking = RewTerm(
-        func=mdp.cube_to_cube_distance_when_lifted,
-        params={
-            "std": 0.3,
-            "minimal_height": 0.04,
-            "src_cfg": SceneEntityCfg("cube_2"),
-            "tgt_cfg": SceneEntityCfg("cube_1"),
-        },
-        weight=16.0,  # Same as lift task
-    )
-
-    # Phase 4: Fine-grained goal tracking (like lift task)
-    object_goal_tracking_fine = RewTerm(
-        func=mdp.cube_to_cube_distance_when_lifted,
-        params={
-            "std": 0.05,
-            "minimal_height": 0.04,
-            "src_cfg": SceneEntityCfg("cube_2"),
-            "tgt_cfg": SceneEntityCfg("cube_1"),
-        },
-        weight=5.0,  # Same as lift task
-    )
-
-    # Penalties
-    action_rate = RewTerm(func=mdp.action_rate_l2, weight=-1e-4)
-
-    joint_vel = RewTerm(
-        func=mdp.joint_vel_l2,
-        weight=-1e-4,
-        params={"asset_cfg": SceneEntityCfg("robot")},
-    )
-
-
-@configclass
-class CurriculumCfg:
-    """Curriculum terms for the MDP - match lift task exactly."""
-
-    action_rate = CurrTerm(
-        func=mdp.modify_reward_weight, params={"term_name": "action_rate", "weight": -1e-1, "num_steps": 10000}
-    )
-
-    joint_vel = CurrTerm(
-        func=mdp.modify_reward_weight, params={"term_name": "joint_vel", "weight": -1e-1, "num_steps": 10000}
-    )
-
-
-@configclass
 class StackEnvCfg(ManagerBasedRLEnvCfg):
     """Configuration for the stacking environment."""
 
@@ -245,16 +264,13 @@ class StackEnvCfg(ManagerBasedRLEnvCfg):
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
     # MDP settings
-    terminations: TerminationsCfg = TerminationsCfg()
-
     rewards: RewardsCfg = RewardsCfg()
-
-    # Enable curriculum to allow free exploration early on
-    curriculum: CurriculumCfg = CurriculumCfg()
+    terminations: TerminationsCfg = TerminationsCfg()
 
     # Unused managers
     commands = None
     events = None
+    curriculum = None
 
     xr: XrCfg = XrCfg(
         anchor_pos=(-0.1, -0.5, -1.05),
@@ -264,16 +280,14 @@ class StackEnvCfg(ManagerBasedRLEnvCfg):
     def __post_init__(self):
         """Post initialization."""
         # general settings
-        self.decimation = 2
-        self.episode_length_s = 15.0  # Middle ground between 5s (lift) and 30s (original stack)
+        self.decimation = 5
+        self.episode_length_s = 30.0
         # simulation settings
         self.sim.dt = 0.01  # 100Hz
-        self.sim.render_interval = self.decimation
+        self.sim.render_interval = 2
 
-        # Enhanced PhysX settings for stability
         self.sim.physx.bounce_threshold_velocity = 0.2
         self.sim.physx.bounce_threshold_velocity = 0.01
-        self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 1024 * 1024 * 4
-        self.sim.physx.gpu_total_aggregate_pairs_capacity = 16 * 16 * 1024
-        self.sim.physx.gpu_max_rigid_patch_count = 2**18  # Increased from default 5 * 2**15 to handle more contacts
+        self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 1024 * 1024 * 8
+        self.sim.physx.gpu_total_aggregate_pairs_capacity = 32 * 1024  # Increased for 3 cubes per env
         self.sim.physx.friction_correlation_distance = 0.00625

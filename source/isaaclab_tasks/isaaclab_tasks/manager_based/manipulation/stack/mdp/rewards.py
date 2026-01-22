@@ -1,11 +1,14 @@
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
 # SPDX-License-Identifier: BSD-3-Clause
-# Improved reward helpers for stacking with better shaping
 
 from __future__ import annotations
-from typing import TYPE_CHECKING
-import torch
 
-from isaaclab.assets import RigidObject, Articulation
+import torch
+from typing import TYPE_CHECKING
+
+from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.sensors import FrameTransformer
 
@@ -13,215 +16,249 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
-def object_is_lifted(
-    env: "ManagerBasedRLEnv",
-    minimal_height: float,
-    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
-) -> torch.Tensor:
-    """Reward for lifting object above minimal_height (smooth Gaussian)."""
-    obj: RigidObject = env.scene[object_cfg.name]
-    z = obj.data.root_pos_w[:, 2]
-    # Smooth Gaussian reward centered at minimal_height
-    return torch.exp(-((z - minimal_height) ** 2) / (2 * 0.02**2))
-
-
-def object_ee_distance(
-    env: "ManagerBasedRLEnv",
-    std: float,
-    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
-    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
-) -> torch.Tensor:
-    """Shaped reward for EE reaching the object using exponential."""
-    obj: RigidObject = env.scene[object_cfg.name]
-    ee: FrameTransformer = env.scene[ee_frame_cfg.name]
-    obj_pos = obj.data.root_pos_w
-    ee_pos = ee.data.target_pos_w[..., 0, :]
-    dist = torch.norm(obj_pos - ee_pos, dim=-1)
-    # Exponential provides better gradient than tanh
-    return torch.exp(-dist / std)
-
-
-def gripper_close_reward(
-    env: "ManagerBasedRLEnv",
-    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> torch.Tensor:
-    """Reward for closing gripper when near object."""
-    robot: Articulation = env.scene[robot_cfg.name]
-    # Get gripper joint positions (last 2 joints for Franka)
-    gripper_pos = robot.data.joint_pos[:, -2:]
-    # Reward smaller gripper opening (encourage closing)
-    return 1.0 - torch.mean(gripper_pos / 0.04, dim=-1)
-
-
-def object_grasped_reward(
-    env: "ManagerBasedRLEnv",
-    object_cfg: SceneEntityCfg,
-    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
-    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-) -> torch.Tensor:
-    """Combined reward for successful grasp with better shaping."""
-    obj: RigidObject = env.scene[object_cfg.name]
-    ee: FrameTransformer = env.scene[ee_frame_cfg.name]
-    robot: Articulation = env.scene[robot_cfg.name]
-    
-    # Distance between object and EE
-    obj_pos = obj.data.root_pos_w
-    ee_pos = ee.data.target_pos_w[..., 0, :]
-    dist = torch.norm(obj_pos - ee_pos, dim=-1)
-    
-    # Gripper state (closed = low value)
-    gripper_pos = robot.data.joint_pos[:, -2:].mean(dim=-1)
-    
-    # Object height
-    obj_height = obj.data.root_pos_w[:, 2]
-    initial_height = 0.0203  # Initial cube height
-    
-    # Distance-based reaching reward (always active)
-    reach_reward = torch.exp(-dist / 0.1)  # More lenient distance scaling
-    
-    # Height difference between gripper and object
-    height_diff = torch.abs(ee_pos[:, 2] - obj_pos[:, 2])
-    height_reward = torch.exp(-height_diff / 0.05)  # Encourage matching height
-    
-    # XY alignment reward
-    xy_dist = torch.norm(obj_pos[:, :2] - ee_pos[:, :2], dim=-1)
-    xy_reward = torch.exp(-xy_dist / 0.08)  # Encourage XY alignment
-    
-    # More lenient initial conditions for attempting grasp
-    near_object = (dist < 0.08).float()  # Larger threshold for initial approach
-    above_object = (height_diff < 0.05).float()  # More forgiving height alignment
-    xy_aligned = (xy_dist < 0.06).float()  # Wider XY alignment window
-    
-    # Gripper control logic with stronger early signals
-    # - Close when approximately positioned
-    # - Open when far away or poorly aligned
-    gripper_should_close = near_object * above_object * xy_aligned
-    
-    # Progressive gripper reward
-    basic_grasp_reward = torch.where(
-        gripper_should_close > 0,
-        2.0 * (1.0 - gripper_pos / 0.04),  # Stronger reward for closing when aligned
-        0.5 * (gripper_pos / 0.04)  # Weaker reward for keeping open when not aligned
-    )
-    
-    # Additional reward for precision once near
-    precision_multiplier = torch.where(
-        dist < 0.04,  # When very close
-        2.0,  # Double the reward for precise positioning
-        1.0
-    )
-    
-    gripper_reward = basic_grasp_reward * precision_multiplier
-    
-    # Lifting reward - check if actually grasped by combining position and grasp
-    properly_grasped = (dist < 0.04) & (gripper_pos < 0.01) & (height_diff < 0.03)
-    lift_height = (obj_height - initial_height).clamp(min=0.0)
-    lift_reward = torch.where(
-        properly_grasped,
-        2.0 * torch.exp(lift_height / 0.05),  # Stronger exponential reward for lifting
-        torch.zeros_like(lift_height)
-    )
-    
-    # Phase-based reward combination
-    reach_phase = 0.4 * reach_reward  # Base reward for reaching
-    align_phase = 0.3 * (height_reward + xy_reward)  # Reward for alignment
-    grasp_phase = 0.5 * gripper_reward  # Increased reward for correct gripper action
-    lift_phase = 3.0 * lift_reward  # Much higher reward for successful lifting
-    
-    return reach_phase + align_phase + grasp_phase + lift_phase
-
-
 def object_ee_distance(
     env: ManagerBasedRLEnv,
     std: float,
-    object_cfg: SceneEntityCfg = SceneEntityCfg("object"),
+    object_cfg: SceneEntityCfg,
     ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
 ) -> torch.Tensor:
-    """Reward the agent for reaching the object using tanh-kernel."""
-    # extract the used quantities (to enable type-hinting)
+    """Reward the agent for reaching a specific object using tanh-kernel."""
     object: RigidObject = env.scene[object_cfg.name]
     ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
+
     # Target object position: (num_envs, 3)
-    cube_pos_w = object.data.root_pos_w
+    object_pos_w = object.data.root_pos_w
     # End-effector position: (num_envs, 3)
     ee_w = ee_frame.data.target_pos_w[..., 0, :]
     # Distance of the end-effector to the object: (num_envs,)
-    object_ee_distance = torch.norm(cube_pos_w - ee_w, dim=1)
-    # Return tanh-kernel reward: (num_envs,)
+    object_ee_distance = torch.norm(object_pos_w - ee_w, dim=1)
+
     return 1 - torch.tanh(object_ee_distance / std)
 
-def horizontal_alignment(
+
+def object_is_lifted(
+    env: ManagerBasedRLEnv,
+    minimal_height: float,
+    object_cfg: SceneEntityCfg
+) -> torch.Tensor:
+    """Reward the agent for lifting an object above the minimal height."""
+    object: RigidObject = env.scene[object_cfg.name]
+    return torch.where(object.data.root_pos_w[:, 2] > minimal_height, 1.0, 0.0)
+
+
+def object_is_grasped(
+    env: ManagerBasedRLEnv,
+    robot_cfg: SceneEntityCfg,
+    ee_frame_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    diff_threshold: float = 0.06,
+) -> torch.Tensor:
+    """Reward the agent for grasping a specific object."""
+    robot: Articulation = env.scene[robot_cfg.name]
+    ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
+    object: RigidObject = env.scene[object_cfg.name]
+
+    object_pos = object.data.root_pos_w
+    end_effector_pos = ee_frame.data.target_pos_w[:, 0, :]
+    pose_diff = torch.linalg.vector_norm(object_pos - end_effector_pos, dim=1)
+
+    # Check if gripper is closed and near object
+    if hasattr(env.scene, "surface_grippers") and len(env.scene.surface_grippers) > 0:
+        surface_gripper = env.scene.surface_grippers["surface_gripper"]
+        suction_cup_status = surface_gripper.state.view(-1, 1)  # 1: closed, 0: closing, -1: open
+        suction_cup_is_closed = (suction_cup_status == 1).to(torch.float32).squeeze()
+        grasped = torch.logical_and(suction_cup_is_closed, pose_diff < diff_threshold).float()
+    else:
+        if hasattr(env.cfg, "gripper_joint_names"):
+            gripper_joint_ids, _ = robot.find_joints(env.cfg.gripper_joint_names)
+            assert len(gripper_joint_ids) == 2, "Reward only supports parallel gripper for now"
+
+            grasped = torch.logical_and(
+                pose_diff < diff_threshold,
+                torch.abs(
+                    robot.data.joint_pos[:, gripper_joint_ids[0]]
+                    - torch.tensor(env.cfg.gripper_open_val, dtype=torch.float32).to(env.device)
+                )
+                > env.cfg.gripper_threshold,
+            )
+            grasped = torch.logical_and(
+                grasped,
+                torch.abs(
+                    robot.data.joint_pos[:, gripper_joint_ids[1]]
+                    - torch.tensor(env.cfg.gripper_open_val, dtype=torch.float32).to(env.device)
+                )
+                > env.cfg.gripper_threshold,
+            ).float()
+
+    return grasped
+
+
+def object_goal_distance_xy(
     env: ManagerBasedRLEnv,
     std: float,
-    src_asset_cfg: SceneEntityCfg,
-    tgt_asset_cfg: SceneEntityCfg,
-    minimal_height: float = 0.04,  # Only reward alignment when src is lifted
+    upper_object_cfg: SceneEntityCfg,
+    lower_object_cfg: SceneEntityCfg,
 ) -> torch.Tensor:
-    """Gaussian reward for XY center alignment between src and tgt.
-    
-    Only provides reward when src object is lifted above minimal_height to avoid
-    encouraging pushing objects on the table.
-    """
-    src: RigidObject = env.scene[src_asset_cfg.name]
-    tgt: RigidObject = env.scene[tgt_asset_cfg.name]
-    dxy = src.data.root_pos_w[:, :2] - tgt.data.root_pos_w[:, :2]
-    dist2 = (dxy * dxy).sum(-1)
-    alignment_reward = torch.exp(-dist2 / (2.0 * std * std + 1e-9))
-    
-    # Only give alignment reward when src is lifted
-    is_lifted = src.data.root_pos_w[:, 2] > minimal_height
-    return torch.where(is_lifted, alignment_reward, torch.zeros_like(alignment_reward))
+    """Reward the agent for aligning the upper object above the lower object in the xy-plane."""
+    upper_object: RigidObject = env.scene[upper_object_cfg.name]
+    lower_object: RigidObject = env.scene[lower_object_cfg.name]
+
+    # Calculate xy distance between objects
+    pos_diff = upper_object.data.root_pos_w[:, :2] - lower_object.data.root_pos_w[:, :2]
+    xy_distance = torch.norm(pos_diff, dim=1)
+
+    return 1 - torch.tanh(xy_distance / std)
 
 
-def action_rate_l2(
-    env: "ManagerBasedRLEnv",
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+def object_above_object(
+    env: ManagerBasedRLEnv,
+    minimal_height: float,
+    upper_object_cfg: SceneEntityCfg,
+    lower_object_cfg: SceneEntityCfg,
 ) -> torch.Tensor:
-    """L2 regularization on joint accelerations (approximated from velocities)."""
-    robot: Articulation = env.scene[asset_cfg.name]
-    joint_vel = robot.data.joint_vel
-    # Use velocity magnitude as a proxy for action rate
-    return torch.mean(joint_vel * joint_vel, dim=-1)
+    """Reward the agent for positioning an object above another object at the proper height."""
+    upper_object: RigidObject = env.scene[upper_object_cfg.name]
+    lower_object: RigidObject = env.scene[lower_object_cfg.name]
+
+    # Check if upper object is above lower object at minimal height
+    height_diff = upper_object.data.root_pos_w[:, 2] - lower_object.data.root_pos_w[:, 2]
+    return torch.where(height_diff > minimal_height, 1.0, 0.0)
 
 
-def joint_vel_l2(
-    env: "ManagerBasedRLEnv",
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+def object_stacked(
+    env: ManagerBasedRLEnv,
+    robot_cfg: SceneEntityCfg,
+    upper_object_cfg: SceneEntityCfg,
+    lower_object_cfg: SceneEntityCfg,
+    xy_threshold: float = 0.05,
+    height_threshold: float = 0.005,
+    height_diff: float = 0.0468,
 ) -> torch.Tensor:
-    """L2 regularization on joint velocities."""
-    robot: Articulation = env.scene[asset_cfg.name]
-    joint_vel = robot.data.joint_vel
-    return torch.mean(joint_vel * joint_vel, dim=-1)
+    """Reward the agent for successfully stacking an object on another."""
+    robot: Articulation = env.scene[robot_cfg.name]
+    upper_object: RigidObject = env.scene[upper_object_cfg.name]
+    lower_object: RigidObject = env.scene[lower_object_cfg.name]
+
+    pos_diff = upper_object.data.root_pos_w - lower_object.data.root_pos_w
+    height_dist = torch.abs(pos_diff[:, 2] - height_diff)
+    xy_dist = torch.norm(pos_diff[:, :2], dim=1)
+
+    stacked = torch.logical_and(xy_dist < xy_threshold, height_dist < height_threshold)
+
+    # Check if gripper is open
+    if hasattr(env.scene, "surface_grippers") and len(env.scene.surface_grippers) > 0:
+        surface_gripper = env.scene.surface_grippers["surface_gripper"]
+        suction_cup_status = surface_gripper.state.view(-1, 1)  # 1: closed, 0: closing, -1: open
+        suction_cup_is_open = (suction_cup_status == -1).to(torch.float32).squeeze()
+        stacked = torch.logical_and(suction_cup_is_open, stacked).float()
+    else:
+        if hasattr(env.cfg, "gripper_joint_names"):
+            gripper_joint_ids, _ = robot.find_joints(env.cfg.gripper_joint_names)
+            assert len(gripper_joint_ids) == 2, "Reward only supports parallel gripper for now"
+
+            stacked = torch.logical_and(
+                torch.isclose(
+                    robot.data.joint_pos[:, gripper_joint_ids[0]],
+                    torch.tensor(env.cfg.gripper_open_val, dtype=torch.float32).to(env.device),
+                    atol=1e-4,
+                    rtol=1e-4,
+                ),
+                stacked,
+            )
+            stacked = torch.logical_and(
+                torch.isclose(
+                    robot.data.joint_pos[:, gripper_joint_ids[1]],
+                    torch.tensor(env.cfg.gripper_open_val, dtype=torch.float32).to(env.device),
+                    atol=1e-4,
+                    rtol=1e-4,
+                ),
+                stacked,
+            ).float()
+
+    return stacked
 
 
-def object_stability(
-    env: "ManagerBasedRLEnv",
-    object_cfg: SceneEntityCfg,
-    lin_vel_thr: float = 0.05,
-    ang_vel_thr: float = 0.2,
+def object_orientation_alignment(
+    env: ManagerBasedRLEnv,
+    std: float,
+    upper_object_cfg: SceneEntityCfg,
+    lower_object_cfg: SceneEntityCfg,
 ) -> torch.Tensor:
-    """Encourage low linear & angular speeds."""
-    obj: RigidObject = env.scene[object_cfg.name]
-    lin_speed = torch.linalg.norm(obj.data.root_lin_vel_w, dim=-1)
-    ang_speed = torch.linalg.norm(obj.data.root_ang_vel_w, dim=-1)
-    lin_penalty = torch.clamp(lin_speed / lin_vel_thr, max=1.0)
-    ang_penalty = torch.clamp(ang_speed / ang_vel_thr, max=1.0)
-    return 1.0 - 0.5 * (lin_penalty + ang_penalty)
+    """Reward the agent for aligning the orientation of two objects (important for lego brick studs)."""
+    upper_object: RigidObject = env.scene[upper_object_cfg.name]
+    lower_object: RigidObject = env.scene[lower_object_cfg.name]
+
+    # Get quaternions
+    upper_quat = upper_object.data.root_quat_w
+    lower_quat = lower_object.data.root_quat_w
+
+    # Calculate the dot product between quaternions (measure of alignment)
+    # For perfectly aligned quaternions, |dot product| = 1
+    quat_dot = torch.abs(torch.sum(upper_quat * lower_quat, dim=1))
+
+    # Convert to angular difference (0 to pi)
+    angular_diff = 2 * torch.acos(torch.clamp(quat_dot, -1.0, 1.0))
+
+    return 1 - torch.tanh(angular_diff / std)
 
 
-def vertical_distance_to_target(
-    env: "ManagerBasedRLEnv",
-    src_asset_cfg: SceneEntityCfg,
-    tgt_asset_cfg: SceneEntityCfg,
-    target_height: float = 0.0406,  # One block height
-    std: float = 0.02,
+def stacking_progress(
+    env: ManagerBasedRLEnv,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    cube_1_cfg: SceneEntityCfg = SceneEntityCfg("cube_1"),
+    cube_2_cfg: SceneEntityCfg = SceneEntityCfg("cube_2"),
+    cube_3_cfg: SceneEntityCfg = SceneEntityCfg("cube_3"),
 ) -> torch.Tensor:
-    """Reward for placing src at target_height above tgt."""
-    src: RigidObject = env.scene[src_asset_cfg.name]
-    tgt: RigidObject = env.scene[tgt_asset_cfg.name]
-    
-    # Calculate height difference
-    z_diff = src.data.root_pos_w[:, 2] - tgt.data.root_pos_w[:, 2]
-    height_error = torch.abs(z_diff - target_height)
-    
-    return torch.exp(-height_error / std)
+    """Reward the agent based on overall stacking progress (how many cubes are stacked)."""
+    robot: Articulation = env.scene[robot_cfg.name]
+    cube_1: RigidObject = env.scene[cube_1_cfg.name]
+    cube_2: RigidObject = env.scene[cube_2_cfg.name]
+    cube_3: RigidObject = env.scene[cube_3_cfg.name]
+
+    # Check if cube_2 is on cube_3 (first stack)
+    pos_diff_23 = cube_2.data.root_pos_w - cube_3.data.root_pos_w
+    height_dist_23 = torch.abs(pos_diff_23[:, 2] - 0.0468)
+    xy_dist_23 = torch.norm(pos_diff_23[:, :2], dim=1)
+    stack_23 = torch.logical_and(xy_dist_23 < 0.05, height_dist_23 < 0.01).float()
+
+    # Check if cube_1 is on cube_2 (second stack)
+    pos_diff_12 = cube_1.data.root_pos_w - cube_2.data.root_pos_w
+    height_dist_12 = torch.abs(pos_diff_12[:, 2] - 0.0468)
+    xy_dist_12 = torch.norm(pos_diff_12[:, :2], dim=1)
+    stack_12 = torch.logical_and(xy_dist_12 < 0.05, height_dist_12 < 0.01).float()
+
+    # Progress: 0 (nothing stacked), 1 (first stack), 2 (both stacks)
+    progress = stack_23 + stack_12
+
+    return progress
+
+
+def gripper_contact_penalty(
+    env: ManagerBasedRLEnv,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    cube_1_cfg: SceneEntityCfg = SceneEntityCfg("cube_1"),
+    cube_2_cfg: SceneEntityCfg = SceneEntityCfg("cube_2"),
+    cube_3_cfg: SceneEntityCfg = SceneEntityCfg("cube_3"),
+    contact_threshold: float = 0.1,
+) -> torch.Tensor:
+    """Penalize excessive contact forces (useful for lego bricks with studs to prevent damage)."""
+    # This is a placeholder - actual implementation would require contact sensor data
+    # For now, we'll use a simpler proxy: penalize if gripper is closed but not grasping properly
+    robot: Articulation = env.scene[robot_cfg.name]
+
+    if hasattr(env.scene, "surface_grippers") and len(env.scene.surface_grippers) > 0:
+        # For suction grippers, no contact penalty needed
+        return torch.zeros(env.num_envs, device=env.device)
+    else:
+        if hasattr(env.cfg, "gripper_joint_names"):
+            gripper_joint_ids, _ = robot.find_joints(env.cfg.gripper_joint_names)
+            # Penalize if gripper is closed but moving fast (might indicate slipping/collision)
+            gripper_vel = torch.abs(robot.data.joint_vel[:, gripper_joint_ids]).sum(dim=1)
+            gripper_pos = robot.data.joint_pos[:, gripper_joint_ids[0]]
+            gripper_closed = torch.abs(
+                gripper_pos - torch.tensor(env.cfg.gripper_open_val, dtype=torch.float32).to(env.device)
+            ) > env.cfg.gripper_threshold
+
+            return -torch.where(torch.logical_and(gripper_closed, gripper_vel > contact_threshold), 1.0, 0.0)
+        else:
+            return torch.zeros(env.num_envs, device=env.device)
