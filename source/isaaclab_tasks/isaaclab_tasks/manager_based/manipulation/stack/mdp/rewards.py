@@ -233,6 +233,47 @@ def stacking_progress(
     return progress
 
 
+def gripper_close_when_near_object(
+    env: ManagerBasedRLEnv,
+    robot_cfg: SceneEntityCfg,
+    ee_frame_cfg: SceneEntityCfg,
+    object_cfg: SceneEntityCfg,
+    distance_threshold: float = 0.08,
+) -> torch.Tensor:
+    """Reward the agent for closing gripper when near an object (encourages grasping exploration)."""
+    robot: Articulation = env.scene[robot_cfg.name]
+    ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
+    object: RigidObject = env.scene[object_cfg.name]
+
+    object_pos = object.data.root_pos_w
+    end_effector_pos = ee_frame.data.target_pos_w[:, 0, :]
+    pose_diff = torch.linalg.vector_norm(object_pos - end_effector_pos, dim=1)
+
+    # Get gripper state
+    if hasattr(env.cfg, "gripper_joint_names"):
+        gripper_joint_ids, _ = robot.find_joints(env.cfg.gripper_joint_names)
+
+        # Check if gripper is closed
+        gripper_closed = torch.abs(
+            robot.data.joint_pos[:, gripper_joint_ids[0]]
+            - torch.tensor(env.cfg.gripper_open_val, dtype=torch.float32).to(env.device)
+        ) > env.cfg.gripper_threshold
+
+        gripper_closed = torch.logical_and(
+            gripper_closed,
+            torch.abs(
+                robot.data.joint_pos[:, gripper_joint_ids[1]]
+                - torch.tensor(env.cfg.gripper_open_val, dtype=torch.float32).to(env.device)
+            ) > env.cfg.gripper_threshold,
+        ).float()
+
+        # Reward closing gripper when near object
+        near_object = (pose_diff < distance_threshold).float()
+        return near_object * gripper_closed
+    else:
+        return torch.zeros(env.num_envs, device=env.device)
+
+
 def gripper_contact_penalty(
     env: ManagerBasedRLEnv,
     robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
@@ -262,3 +303,196 @@ def gripper_contact_penalty(
             return -torch.where(torch.logical_and(gripper_closed, gripper_vel > contact_threshold), 1.0, 0.0)
         else:
             return torch.zeros(env.num_envs, device=env.device)
+
+
+# ==============================================================================
+# IsaacGym-Style Reward Functions (Proven to work for cube stacking)
+# ==============================================================================
+
+def isaacgym_distance_reward(
+    env: ManagerBasedRLEnv,
+    object_cfg: SceneEntityCfg,
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+) -> torch.Tensor:
+    """
+    Distance reward following IsaacGym's approach:
+    - Uses distance from hand center + left finger + right finger
+    - Uses tanh for smooth, bounded gradients
+    - Encourages fingertips to wrap around object
+    """
+    object: RigidObject = env.scene[object_cfg.name]
+    ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
+
+    # Object position
+    object_pos = object.data.root_pos_w
+
+    # End-effector (hand center) position - frame 0
+    ee_pos = ee_frame.data.target_pos_w[:, 0, :]
+    d_hand = torch.norm(object_pos - ee_pos, dim=-1)
+
+    # Left fingertip position - frame 1
+    left_finger_pos = ee_frame.data.target_pos_w[:, 1, :]
+    d_left = torch.norm(object_pos - left_finger_pos, dim=-1)
+
+    # Right fingertip position - frame 2
+    right_finger_pos = ee_frame.data.target_pos_w[:, 2, :]
+    d_right = torch.norm(object_pos - right_finger_pos, dim=-1)
+
+    # Average distance from all three points
+    d_avg = (d_hand + d_left + d_right) / 3.0
+
+    # Tanh kernel for smooth, bounded reward (max = 1.0)
+    return 1.0 - torch.tanh(10.0 * d_avg)
+
+
+def isaacgym_lift_reward(
+    env: ManagerBasedRLEnv,
+    object_cfg: SceneEntityCfg,
+    object_size: float,
+    table_height: float = 1.025,
+    lift_threshold: float = 0.04,
+) -> torch.Tensor:
+    """
+    Lift reward following IsaacGym's approach:
+    - Binary reward for lifting above threshold
+    - Threshold is relative to object size and table height
+    """
+    object: RigidObject = env.scene[object_cfg.name]
+
+    # Height of object above table
+    object_height = object.data.root_pos_w[:, 2] - table_height
+
+    # Lifted if object bottom is above threshold
+    lifted = (object_height - object_size / 2.0) > lift_threshold
+
+    return lifted.float()
+
+
+def isaacgym_align_reward(
+    env: ManagerBasedRLEnv,
+    upper_object_cfg: SceneEntityCfg,
+    lower_object_cfg: SceneEntityCfg,
+    upper_size: float,
+    lower_size: float,
+    table_height: float = 1.025,
+    lift_threshold: float = 0.04,
+) -> torch.Tensor:
+    """
+    Alignment reward following IsaacGym's approach:
+    - Only active if upper object is lifted
+    - Measures distance between objects with height offset
+    - Uses tanh for smooth gradients
+    """
+    upper_obj: RigidObject = env.scene[upper_object_cfg.name]
+    lower_obj: RigidObject = env.scene[lower_object_cfg.name]
+
+    # Check if upper object is lifted
+    upper_height = upper_obj.data.root_pos_w[:, 2] - table_height
+    upper_lifted = (upper_height - upper_size / 2.0) > lift_threshold
+
+    # Compute target position (lower cube center + offset for stacking)
+    offset = torch.zeros_like(upper_obj.data.root_pos_w)
+    offset[:, 2] = (upper_size + lower_size) / 2.0
+
+    # Distance from upper cube to target position above lower cube
+    d_align = torch.norm(
+        upper_obj.data.root_pos_w - (lower_obj.data.root_pos_w + offset),
+        dim=-1
+    )
+
+    # Alignment reward only active if lifted
+    align_reward = (1.0 - torch.tanh(10.0 * d_align)) * upper_lifted.float()
+
+    return align_reward
+
+
+def isaacgym_stack_reward(
+    env: ManagerBasedRLEnv,
+    robot_cfg: SceneEntityCfg,
+    ee_frame_cfg: SceneEntityCfg,
+    upper_object_cfg: SceneEntityCfg,
+    lower_object_cfg: SceneEntityCfg,
+    upper_size: float,
+    lower_size: float,
+    xy_threshold: float = 0.03,  # Increased from 0.02 for larger bricks
+    z_threshold: float = 0.03,    # Increased from 0.02 for larger bricks
+    gripper_away_threshold: float = 0.04,
+) -> torch.Tensor:
+    """
+    Stack success reward following IsaacGym's approach:
+    - XY alignment check
+    - Height check (cube at correct stacking height)
+    - Gripper must be away from cube (ensures stability)
+    - Binary reward (all conditions must be true)
+    """
+    robot: Articulation = env.scene[robot_cfg.name]
+    ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
+    upper_obj: RigidObject = env.scene[upper_object_cfg.name]
+    lower_obj: RigidObject = env.scene[lower_object_cfg.name]
+
+    # 1. XY alignment check
+    xy_dist = torch.norm(
+        upper_obj.data.root_pos_w[:, :2] - lower_obj.data.root_pos_w[:, :2],
+        dim=-1
+    )
+    xy_aligned = xy_dist < xy_threshold
+
+    # 2. Height check (upper cube should be at lower_cube_top + upper_cube_half)
+    target_height = lower_obj.data.root_pos_w[:, 2] + lower_size / 2.0 + upper_size / 2.0
+    height_diff = torch.abs(upper_obj.data.root_pos_w[:, 2] - target_height)
+    at_correct_height = height_diff < z_threshold
+
+    # 3. Gripper away from upper cube (ensures cube is stable, not held)
+    ee_pos = ee_frame.data.target_pos_w[:, 0, :]
+    gripper_dist = torch.norm(upper_obj.data.root_pos_w - ee_pos, dim=-1)
+    gripper_away = gripper_dist > gripper_away_threshold
+
+    # All three conditions must be true
+    stacked = xy_aligned & at_correct_height & gripper_away
+
+    return stacked.float()
+
+
+def isaacgym_combined_reward(
+    env: ManagerBasedRLEnv,
+    robot_cfg: SceneEntityCfg,
+    ee_frame_cfg: SceneEntityCfg,
+    upper_object_cfg: SceneEntityCfg,
+    lower_object_cfg: SceneEntityCfg,
+    upper_size: float,
+    lower_size: float,
+    table_height: float = 1.025,
+    r_dist_scale: float = 1.0,
+    r_lift_scale: float = 1.0,
+    r_align_scale: float = 1.0,
+    r_stack_scale: float = 2.0,
+) -> torch.Tensor:
+    """
+    Combined reward following IsaacGym's exact approach:
+    - Compute all 4 sub-rewards
+    - dist_reward = max(distance, alignment) - smooth transition
+    - Final reward = stack_reward IF stacked ELSE (dist + lift + align)
+    """
+    # Compute sub-rewards
+    dist_r = isaacgym_distance_reward(env, upper_object_cfg, ee_frame_cfg)
+    lift_r = isaacgym_lift_reward(env, upper_object_cfg, upper_size, table_height)
+    align_r = isaacgym_align_reward(
+        env, upper_object_cfg, lower_object_cfg,
+        upper_size, lower_size, table_height
+    )
+    stack_r = isaacgym_stack_reward(
+        env, robot_cfg, ee_frame_cfg, upper_object_cfg, lower_object_cfg,
+        upper_size, lower_size
+    )
+
+    # Take max of distance and alignment (smooth transition)
+    dist_r = torch.max(dist_r, align_r)
+
+    # Either/or composition: if stacked, only stack reward; otherwise sum of others
+    reward = torch.where(
+        stack_r > 0.0,
+        r_stack_scale * stack_r,
+        r_dist_scale * dist_r + r_lift_scale * lift_r + r_align_scale * align_r
+    )
+
+    return reward

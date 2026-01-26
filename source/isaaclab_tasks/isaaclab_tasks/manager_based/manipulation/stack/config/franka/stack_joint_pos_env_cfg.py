@@ -108,7 +108,7 @@ class FrankaCubeStackEnvCfg(StackEnvCfg):
             init_state=RigidObjectCfg.InitialStateCfg(pos=[0.40,  0.00, 0.0203], rot=[1, 0, 0, 0]),
             spawn=UsdFileCfg(
                 usd_path="props/c_lego_duplo.usd",
-                scale=(1.0, 1.0, 1.0),
+                scale=(1.5, 1.5, 1.5),
                 rigid_props=cube_properties,
                 semantic_tags=[("class", "cube_1")],
             ),
@@ -119,7 +119,7 @@ class FrankaCubeStackEnvCfg(StackEnvCfg):
             init_state=RigidObjectCfg.InitialStateCfg(pos=[0.55,  0.05, 0.0203], rot=[1, 0, 0, 0]),
             spawn=UsdFileCfg(
                 usd_path="props/c_lego_duplo.usd",
-                scale=(1.0, 1.0, 1.0),
+                scale=(1.5, 1.5, 1.5),
                 rigid_props=cube_properties,
                 semantic_tags=[("class", "cube_2")],
             ),
@@ -130,7 +130,7 @@ class FrankaCubeStackEnvCfg(StackEnvCfg):
             init_state=RigidObjectCfg.InitialStateCfg(pos=[0.60, -0.10, 0.0203], rot=[1, 0, 0, 0]),
             spawn=UsdFileCfg(
                 usd_path="props/c_lego_duplo.usd",
-                scale=(1.0, 1.0, 1.0),
+                scale=(1.5, 1.5, 1.5),
                 rigid_props=cube_properties,
                 semantic_tags=[("class", "cube_3")],
             ),

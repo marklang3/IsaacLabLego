@@ -9,6 +9,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.devices.openxr import XrCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
@@ -99,129 +100,45 @@ class ObservationsCfg:
 
 @configclass
 class RewardsCfg:
-    """Reward terms for the MDP."""
+    """Reward terms for the MDP - IsaacGym style (proven to work)."""
 
-    # Task 1: Reach and grasp cube_2
-    reaching_cube_2 = RewTerm(
-        func=mdp.object_ee_distance,
-        params={"std": 0.1, "object_cfg": SceneEntityCfg("cube_2")},
-        weight=1.0,
-    )
-
-    grasping_cube_2 = RewTerm(
-        func=mdp.object_is_grasped,
+    # Stack cube_2 on cube_3 (IsaacGym combined reward)
+    stack_cube_2_on_3 = RewTerm(
+        func=mdp.isaacgym_combined_reward,
         params={
             "robot_cfg": SceneEntityCfg("robot"),
             "ee_frame_cfg": SceneEntityCfg("ee_frame"),
-            "object_cfg": SceneEntityCfg("cube_2"),
-        },
-        weight=5.0,
-    )
-
-    lifting_cube_2 = RewTerm(
-        func=mdp.object_is_lifted,
-        params={"minimal_height": 0.04, "object_cfg": SceneEntityCfg("cube_2")},
-        weight=10.0,
-    )
-
-    # Task 2: Stack cube_2 on cube_3
-    aligning_cube_2_over_cube_3_xy = RewTerm(
-        func=mdp.object_goal_distance_xy,
-        params={"std": 0.1, "upper_object_cfg": SceneEntityCfg("cube_2"), "lower_object_cfg": SceneEntityCfg("cube_3")},
-        weight=3.0,
-    )
-
-    cube_2_above_cube_3 = RewTerm(
-        func=mdp.object_above_object,
-        params={
-            "minimal_height": 0.04,
             "upper_object_cfg": SceneEntityCfg("cube_2"),
             "lower_object_cfg": SceneEntityCfg("cube_3"),
+            "upper_size": 0.0702,  # Lego brick height scaled 1.5x (0.0468 * 1.5)
+            "lower_size": 0.0702,
+            "table_height": 1.025,
+            "r_dist_scale": 1.0,
+            "r_lift_scale": 1.0,
+            "r_align_scale": 1.0,
+            "r_stack_scale": 5.0,  # Increased to incentivize stacking
         },
-        weight=5.0,
-    )
-
-    stacking_cube_2_on_cube_3 = RewTerm(
-        func=mdp.object_stacked,
-        params={
-            "robot_cfg": SceneEntityCfg("robot"),
-            "upper_object_cfg": SceneEntityCfg("cube_2"),
-            "lower_object_cfg": SceneEntityCfg("cube_3"),
-            "xy_threshold": 0.05,
-            "height_threshold": 0.01,
-            "height_diff": 0.0468,
-        },
-        weight=20.0,
-    )
-
-    # Task 3: Reach and grasp cube_1
-    reaching_cube_1 = RewTerm(
-        func=mdp.object_ee_distance,
-        params={"std": 0.1, "object_cfg": SceneEntityCfg("cube_1")},
         weight=1.0,
     )
 
-    grasping_cube_1 = RewTerm(
-        func=mdp.object_is_grasped,
+    # Stack cube_1 on cube_2 (disabled in Stage 1, enabled later)
+    stack_cube_1_on_2 = RewTerm(
+        func=mdp.isaacgym_combined_reward,
         params={
             "robot_cfg": SceneEntityCfg("robot"),
             "ee_frame_cfg": SceneEntityCfg("ee_frame"),
-            "object_cfg": SceneEntityCfg("cube_1"),
-        },
-        weight=5.0,
-    )
-
-    lifting_cube_1 = RewTerm(
-        func=mdp.object_is_lifted,
-        params={"minimal_height": 0.04, "object_cfg": SceneEntityCfg("cube_1")},
-        weight=10.0,
-    )
-
-    # Task 4: Stack cube_1 on cube_2
-    aligning_cube_1_over_cube_2_xy = RewTerm(
-        func=mdp.object_goal_distance_xy,
-        params={"std": 0.1, "upper_object_cfg": SceneEntityCfg("cube_1"), "lower_object_cfg": SceneEntityCfg("cube_2")},
-        weight=3.0,
-    )
-
-    cube_1_above_cube_2 = RewTerm(
-        func=mdp.object_above_object,
-        params={
-            "minimal_height": 0.04,
             "upper_object_cfg": SceneEntityCfg("cube_1"),
             "lower_object_cfg": SceneEntityCfg("cube_2"),
+            "upper_size": 0.0468,
+            "lower_size": 0.0468,
+            "table_height": 1.025,
+            "r_dist_scale": 1.0,
+            "r_lift_scale": 1.0,
+            "r_align_scale": 1.0,
+            "r_stack_scale": 5.0,  # Increased to incentivize stacking
         },
-        weight=5.0,
+        weight=0.0,  # Disabled in Stage 1
     )
-
-    stacking_cube_1_on_cube_2 = RewTerm(
-        func=mdp.object_stacked,
-        params={
-            "robot_cfg": SceneEntityCfg("robot"),
-            "upper_object_cfg": SceneEntityCfg("cube_1"),
-            "lower_object_cfg": SceneEntityCfg("cube_2"),
-            "xy_threshold": 0.05,
-            "height_threshold": 0.01,
-            "height_diff": 0.0468,
-        },
-        weight=20.0,
-    )
-
-    # Orientation alignment rewards (important for lego brick studs)
-    orientation_alignment_2_3 = RewTerm(
-        func=mdp.object_orientation_alignment,
-        params={"std": 0.5, "upper_object_cfg": SceneEntityCfg("cube_2"), "lower_object_cfg": SceneEntityCfg("cube_3")},
-        weight=2.0,
-    )
-
-    orientation_alignment_1_2 = RewTerm(
-        func=mdp.object_orientation_alignment,
-        params={"std": 0.5, "upper_object_cfg": SceneEntityCfg("cube_1"), "lower_object_cfg": SceneEntityCfg("cube_2")},
-        weight=2.0,
-    )
-
-    # Overall progress reward
-    stacking_progress = RewTerm(func=mdp.stacking_progress, weight=15.0)
 
     # Action penalties for smooth motion
     action_rate = RewTerm(func=mdp.action_rate_l2, weight=-1e-4)
@@ -255,6 +172,27 @@ class TerminationsCfg:
 
 
 @configclass
+class CurriculumCfg:
+    """Curriculum terms for progressive learning (IsaacGym approach).
+
+    Simple 2-stage curriculum:
+    - Stage 1 (0-49M steps): Stack cube_2 on cube_3
+    - Stage 2 (49M+ steps): Add cube_1 stacking on cube_2
+
+    With 4096 envs and horizon_length=24, one epoch = 98,304 steps
+    So 500 epochs = ~49M steps
+    """
+
+    # STAGE 1 → STAGE 2 TRANSITION (at ~500 epochs / 49M steps)
+    # Enable the second stacking operation
+
+    enable_cube_1_stacking = CurrTerm(
+        func=mdp.modify_reward_weight,
+        params={"term_name": "stack_cube_1_on_2", "weight": 1.0, "num_steps": 49_000_000}
+    )
+
+
+@configclass
 class StackEnvCfg(ManagerBasedRLEnvCfg):
     """Configuration for the stacking environment."""
 
@@ -266,11 +204,11 @@ class StackEnvCfg(ManagerBasedRLEnvCfg):
     # MDP settings
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
+    curriculum: CurriculumCfg = CurriculumCfg()  # Enable 3-stage curriculum learning
 
     # Unused managers
     commands = None
     events = None
-    curriculum = None
 
     xr: XrCfg = XrCfg(
         anchor_pos=(-0.1, -0.5, -1.05),
@@ -289,5 +227,7 @@ class StackEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.physx.bounce_threshold_velocity = 0.2
         self.sim.physx.bounce_threshold_velocity = 0.01
         self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 1024 * 1024 * 8
-        self.sim.physx.gpu_total_aggregate_pairs_capacity = 32 * 1024  # Increased for 3 cubes per env
+        self.sim.physx.gpu_total_aggregate_pairs_capacity = 16 * 16 * 1024  # Increased for 4096 envs with 3 cubes each
+        self.sim.physx.gpu_heap_capacity = 256 * 1024 * 1024  # 256 MB general heap capacity
+        self.sim.physx.gpu_max_rigid_patch_count = 15 * 2**16  # Increased patch buffer: ~983k patches (default is 5 * 2**15 = 163k)
         self.sim.physx.friction_correlation_distance = 0.00625
