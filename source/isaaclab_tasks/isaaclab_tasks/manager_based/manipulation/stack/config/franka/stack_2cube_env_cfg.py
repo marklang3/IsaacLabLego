@@ -52,13 +52,14 @@ class EventCfg:
         params={
             "pose_range": {"x": (0.4, 0.6), "y": (-0.10, 0.10), "z": (0.0203, 0.0203), "yaw": (-1.0, 1, 0)},
             "min_separation": 0.1,
-            "asset_cfgs": [SceneEntityCfg("cube_1"), SceneEntityCfg("cube_2"), SceneEntityCfg("cube_3")],
+            "asset_cfgs": [SceneEntityCfg("cube_2"), SceneEntityCfg("cube_3")],  # Only 2 cubes to match IsaacGym
         },
     )
 
 
 @configclass
-class FrankaCubeStackEnvCfg(StackEnvCfg):
+class Franka2CubeStackEnvCfg(StackEnvCfg):
+    """Configuration for 2-cube stacking task - matches IsaacGym exactly."""
 
     def __post_init__(self):
         # post init of parent
@@ -102,18 +103,7 @@ class FrankaCubeStackEnvCfg(StackEnvCfg):
             disable_gravity=False,
         )
 
-        # Set each stacking cube deterministically
-        self.scene.cube_1 = RigidObjectCfg(
-            prim_path="{ENV_REGEX_NS}/c_lego_duplo_1",   
-            init_state=RigidObjectCfg.InitialStateCfg(pos=[0.40,  0.00, 0.0203], rot=[1, 0, 0, 0]),
-            spawn=UsdFileCfg(
-                usd_path="props/c_lego_duplo.usd",
-                scale=(1.5, 1.5, 1.5),
-                rigid_props=cube_properties,
-                semantic_tags=[("class", "cube_1")],
-            ),
-        )
-
+        # Set each stacking cube deterministically (2 cubes only - matching IsaacGym)
         self.scene.cube_2 = RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/c_lego_duplo_2",   
             init_state=RigidObjectCfg.InitialStateCfg(pos=[0.55,  0.05, 0.0203], rot=[1, 0, 0, 0]),
@@ -167,3 +157,38 @@ class FrankaCubeStackEnvCfg(StackEnvCfg):
                 ),
             ],
         )
+
+        # 2-Cube Configuration: Add cube_2 and cube_3 observations
+
+        # Remove 3-cube observations that reference cube_1
+        if hasattr(self.observations.policy, 'object'):
+            delattr(self.observations.policy, 'object')
+        if hasattr(self.observations.policy, 'cube_positions'):
+            delattr(self.observations.policy, 'cube_positions')
+        if hasattr(self.observations.policy, 'cube_orientations'):
+            delattr(self.observations.policy, 'cube_orientations')
+
+        # Add 2-cube specific observations (cube_2 and cube_3 only)
+        from isaaclab.managers import ObservationTermCfg as ObsTerm
+
+        # Cube 2 position and orientation (the cube we need to pick up)
+        self.observations.policy.cube_2_pos = ObsTerm(func=mdp.cube_2_position)
+        self.observations.policy.cube_2_quat = ObsTerm(func=mdp.cube_2_orientation)
+
+        # Cube 3 position and orientation (the base cube we stack on)
+        self.observations.policy.cube_3_pos = ObsTerm(func=mdp.cube_3_position)
+        self.observations.policy.cube_3_quat = ObsTerm(func=mdp.cube_3_orientation)
+
+        # Disable cube_1 reward (only stack cube_2 on cube_3)
+        if hasattr(self.rewards, 'stack_cube_1_on_2'):
+            delattr(self.rewards, 'stack_cube_1_on_2')
+
+        # Disable cube_1 termination checks
+        if hasattr(self.terminations, 'cube_1_dropping'):
+            delattr(self.terminations, 'cube_1_dropping')
+        if hasattr(self.terminations, 'success'):
+            delattr(self.terminations, 'success')  # cubes_stacked function expects 3 cubes
+
+        # No curriculum needed for 2-cube task (single objective)
+        if hasattr(self, 'curriculum'):
+            self.curriculum = None

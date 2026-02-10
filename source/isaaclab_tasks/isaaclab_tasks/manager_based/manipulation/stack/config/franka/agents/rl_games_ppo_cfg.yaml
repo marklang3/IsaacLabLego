@@ -8,8 +8,8 @@ params:
 
   # environment wrapper clipping
   env:
-    clip_observations: 100.0
-    clip_actions: 100.0
+    clip_observations: 5.0  # Changed from 100.0 to 5.0 to match IsaacGym
+    clip_actions: 1.0  # Changed from 100.0 to 1.0 to match IsaacGym
 
   algo:
     name: a2c_continuous
@@ -24,7 +24,6 @@ params:
       continuous:
         mu_activation: None
         sigma_activation: None
-
         mu_init:
           name: default
         sigma_init:
@@ -35,7 +34,6 @@ params:
       units: [256, 128, 64]
       activation: elu
       d2rl: False
-
       initializer:
         name: default
       regularizer:
@@ -54,29 +52,29 @@ params:
     mixed_precision: False
     normalize_input: True
     normalize_value: True
-    value_bootstrap: False
+    value_bootstrap: True  # Changed to True to match IsaacGym
     num_actors: -1
     reward_shaper:
-      scale_value: 0.01
+      scale_value: 1.0  # CRITICAL: Changed from 0.01 to 1.0 to match IsaacGym (was scaling rewards down 100x!)
     normalize_advantage: True
     gamma: 0.99
     tau: 0.95
-    learning_rate: 1e-4
+    learning_rate: 5e-4  # Changed from 1e-4 to 5e-4 to match IsaacGym (5x faster learning)
     lr_schedule: adaptive
-    schedule_type: legacy
-    kl_threshold: 0.01
-    score_to_win: 100000000
-    max_epochs: 1500
-    save_best_after: 100
-    save_frequency: 50
+    schedule_type: standard  # Changed from legacy to standard to match IsaacGym
+    kl_threshold: 0.008  # Changed from 0.01 to 0.008 to match IsaacGym
+    score_to_win: 10000  # Changed from 100000000 to 10000 to match IsaacGym
+    max_epochs: 50000  # Extended for LEGO precision stacking (requires longer training)
+    save_best_after: 200  # Changed from 100 to 200 to match IsaacGym
+    save_frequency: 100  # Changed from 50 to 100 to match IsaacGym
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.01  # Increased from 0.001 to encourage exploration of gripper actions
+    entropy_coef: 0.0  # Changed from 0.01 to 0.0 to match IsaacGym (no exploration bonus)
     truncate_grads: True
     e_clip: 0.2
-    horizon_length: 24
-    minibatch_size: 24576
-    mini_epochs: 8
+    horizon_length: 32  # Changed from 24 to 32 to match IsaacGym
+    minibatch_size: 16384  # Changed from 24576 to 16384 to match IsaacGym
+    mini_epochs: 5  # Changed from 8 to 5 to match IsaacGym
     critic_coef: 4
     clip_value: True
     clip_actions: False

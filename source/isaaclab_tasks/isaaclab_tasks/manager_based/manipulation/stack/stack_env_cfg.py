@@ -113,10 +113,10 @@ class RewardsCfg:
             "upper_size": 0.0702,  # Lego brick height scaled 1.5x (0.0468 * 1.5)
             "lower_size": 0.0702,
             "table_height": 1.025,
-            "r_dist_scale": 1.0,
-            "r_lift_scale": 1.0,
-            "r_align_scale": 1.0,
-            "r_stack_scale": 5.0,  # Increased to incentivize stacking
+            "r_dist_scale": 0.1,   # Match IsaacGym - low weight for reaching
+            "r_lift_scale": 1.5,   # Match IsaacGym
+            "r_align_scale": 2.0,  # Match IsaacGym
+            "r_stack_scale": 16.0, # Match IsaacGym - very high reward for success!
         },
         weight=1.0,
     )
@@ -129,13 +129,13 @@ class RewardsCfg:
             "ee_frame_cfg": SceneEntityCfg("ee_frame"),
             "upper_object_cfg": SceneEntityCfg("cube_1"),
             "lower_object_cfg": SceneEntityCfg("cube_2"),
-            "upper_size": 0.0468,
-            "lower_size": 0.0468,
+            "upper_size": 0.0702,  # Also scaled 1.5x
+            "lower_size": 0.0702,  # Also scaled 1.5x
             "table_height": 1.025,
-            "r_dist_scale": 1.0,
-            "r_lift_scale": 1.0,
-            "r_align_scale": 1.0,
-            "r_stack_scale": 5.0,  # Increased to incentivize stacking
+            "r_dist_scale": 0.1,   # Match IsaacGym
+            "r_lift_scale": 1.5,   # Match IsaacGym
+            "r_align_scale": 2.0,  # Match IsaacGym
+            "r_stack_scale": 16.0, # Match IsaacGym
         },
         weight=0.0,  # Disabled in Stage 1
     )
@@ -176,19 +176,19 @@ class CurriculumCfg:
     """Curriculum terms for progressive learning (IsaacGym approach).
 
     Simple 2-stage curriculum:
-    - Stage 1 (0-49M steps): Stack cube_2 on cube_3
-    - Stage 2 (49M+ steps): Add cube_1 stacking on cube_2
+    - Stage 1 (0-65M steps): Stack cube_2 on cube_3
+    - Stage 2 (65M+ steps): Add cube_1 stacking on cube_2
 
-    With 4096 envs and horizon_length=24, one epoch = 98,304 steps
-    So 500 epochs = ~49M steps
+    With 4096 envs and horizon_length=32 (matching IsaacGym), one epoch = 131,072 steps
+    So 500 epochs = ~65M steps (5% of 10,000 epoch training)
     """
 
-    # STAGE 1 → STAGE 2 TRANSITION (at ~500 epochs / 49M steps)
+    # STAGE 1 → STAGE 2 TRANSITION (at ~500 epochs / 65M steps)
     # Enable the second stacking operation
 
     enable_cube_1_stacking = CurrTerm(
         func=mdp.modify_reward_weight,
-        params={"term_name": "stack_cube_1_on_2", "weight": 1.0, "num_steps": 49_000_000}
+        params={"term_name": "stack_cube_1_on_2", "weight": 1.0, "num_steps": 65_000_000}
     )
 
 
@@ -219,9 +219,9 @@ class StackEnvCfg(ManagerBasedRLEnvCfg):
         """Post initialization."""
         # general settings
         self.decimation = 5
-        self.episode_length_s = 30.0
+        self.episode_length_s = 15.0  # Changed from 30.0 to 15.0 to match IsaacGym's 300 control steps
         # simulation settings
-        self.sim.dt = 0.01  # 100Hz
+        self.sim.dt = 0.01  # 100Hz (IsaacGym uses 60Hz but Isaac Lab typically uses 100Hz)
         self.sim.render_interval = 2
 
         self.sim.physx.bounce_threshold_velocity = 0.2

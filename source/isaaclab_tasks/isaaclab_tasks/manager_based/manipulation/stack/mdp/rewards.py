@@ -414,8 +414,8 @@ def isaacgym_stack_reward(
     lower_object_cfg: SceneEntityCfg,
     upper_size: float,
     lower_size: float,
-    xy_threshold: float = 0.03,  # Increased from 0.02 for larger bricks
-    z_threshold: float = 0.03,    # Increased from 0.02 for larger bricks
+    xy_threshold: float = 0.02,  # Match IsaacGym exactly (was 0.03 for larger bricks, reverting to match original)
+    z_threshold: float = 0.02,    # Match IsaacGym exactly (was 0.03 for larger bricks, reverting to match original)
     gripper_away_threshold: float = 0.04,
 ) -> torch.Tensor:
     """
@@ -462,6 +462,7 @@ def isaacgym_combined_reward(
     upper_size: float,
     lower_size: float,
     table_height: float = 1.025,
+    lift_threshold: float = 0.04,
     r_dist_scale: float = 1.0,
     r_lift_scale: float = 1.0,
     r_align_scale: float = 1.0,
@@ -474,25 +475,169 @@ def isaacgym_combined_reward(
     - Final reward = stack_reward IF stacked ELSE (dist + lift + align)
     """
     # Compute sub-rewards
-    dist_r = isaacgym_distance_reward(env, upper_object_cfg, ee_frame_cfg)
-    lift_r = isaacgym_lift_reward(env, upper_object_cfg, upper_size, table_height)
+    reach_r = isaacgym_distance_reward(env, upper_object_cfg, ee_frame_cfg)
+    lift_r = isaacgym_lift_reward(env, upper_object_cfg, upper_size, table_height, lift_threshold)
     align_r = isaacgym_align_reward(
         env, upper_object_cfg, lower_object_cfg,
-        upper_size, lower_size, table_height
+        upper_size, lower_size, table_height, lift_threshold
     )
     stack_r = isaacgym_stack_reward(
         env, robot_cfg, ee_frame_cfg, upper_object_cfg, lower_object_cfg,
         upper_size, lower_size
     )
 
-    # Take max of distance and alignment (smooth transition)
-    dist_r = torch.max(dist_r, align_r)
-
-    # Either/or composition: if stacked, only stack reward; otherwise sum of others
+    # Either/or composition matching IsaacGym exactly:
+    # R = max(R_stack, R_align + R_lift + R_reach)
     reward = torch.where(
         stack_r > 0.0,
         r_stack_scale * stack_r,
-        r_dist_scale * dist_r + r_lift_scale * lift_r + r_align_scale * align_r
+        r_dist_scale * reach_r + r_lift_scale * lift_r + r_align_scale * align_r
     )
 
     return reward
+
+
+def nearly_stacked_reward(
+    env: ManagerBasedRLEnv,
+    upper_object_cfg: SceneEntityCfg,
+    lower_object_cfg: SceneEntityCfg,
+    upper_size: float,
+    lower_size: float,
+    table_height: float = 0.0,
+    lift_threshold: float = 0.01,
+    xy_threshold: float = 0.03,  # Looser than full stack (0.02)
+    z_threshold: float = 0.03,
+) -> torch.Tensor:
+    """
+    Intermediate reward for being close to successful stack.
+    Bridges the gap between alignment (2.0) and full stack (16.0).
+    Helps policy learn "almost there" state for precision stacking.
+    """
+    upper_obj: RigidObject = env.scene[upper_object_cfg.name]
+    lower_obj: RigidObject = env.scene[lower_object_cfg.name]
+
+    # Check if upper object is lifted
+    upper_height = upper_obj.data.root_pos_w[:, 2] - table_height
+    upper_lifted = (upper_height - upper_size / 2.0) > lift_threshold
+
+    # XY alignment check (looser threshold)
+    xy_dist = torch.norm(
+        upper_obj.data.root_pos_w[:, :2] - lower_obj.data.root_pos_w[:, :2],
+        dim=-1
+    )
+    xy_close = xy_dist < xy_threshold
+
+    # Height check (looser threshold)
+    target_height = lower_obj.data.root_pos_w[:, 2] + lower_size / 2.0 + upper_size / 2.0
+    height_diff = torch.abs(upper_obj.data.root_pos_w[:, 2] - target_height)
+    at_close_height = height_diff < z_threshold
+
+    # Reward for being close (but not perfectly stacked yet)
+    nearly_there = xy_close & at_close_height & upper_lifted
+
+    return nearly_there.float()
+
+
+def stability_penalty(
+    env: ManagerBasedRLEnv,
+    upper_object_cfg: SceneEntityCfg,
+    lower_object_cfg: SceneEntityCfg,
+    xy_threshold: float = 0.03,  # Only penalize when close
+) -> torch.Tensor:
+    """
+    Penalizes excessive object velocity when objects are close to stacking position.
+    Reduces hovering/shaking behavior by encouraging stillness when near target.
+    Critical for precision stacking tasks.
+    """
+    upper_obj: RigidObject = env.scene[upper_object_cfg.name]
+    lower_obj: RigidObject = env.scene[lower_object_cfg.name]
+
+    # Check if objects are close
+    xy_dist = torch.norm(
+        upper_obj.data.root_pos_w[:, :2] - lower_obj.data.root_pos_w[:, :2],
+        dim=-1
+    )
+    close_to_target = xy_dist < xy_threshold
+
+    # Compute velocity magnitude
+    velocity = torch.norm(upper_obj.data.root_lin_vel_w, dim=-1)
+
+    # Only apply penalty when close to target
+    penalty = velocity * close_to_target.float()
+
+    return penalty
+
+
+def knob_cavity_alignment_reward(
+    env: ManagerBasedRLEnv,
+    upper_object_cfg: SceneEntityCfg,
+    lower_object_cfg: SceneEntityCfg,
+    upper_size: float,
+    lower_size: float,
+    table_height: float = 0.0,
+    lift_threshold: float = 0.01,
+    xy_threshold: float = 0.015,  # Tighter than smooth cubes (0.02) - LEGO studs require precision
+    rotation_threshold: float = 0.2,  # Radians - ~11 degrees tolerance for knob alignment
+) -> torch.Tensor:
+    """
+    LEGO-specific reward for knob-cavity alignment.
+    Requires both positional AND rotational alignment for knobs to fit into cavities.
+    This is stricter than smooth cube alignment due to geometric constraints.
+    
+    LEGO Duplo brick constraints:
+    - Knobs must align with cavities (requires XY precision within ~1.5cm)
+    - Rotation must be within ~11 degrees (0.2 rad) for knobs to fit
+    - Height must be precise for knobs to engage with cavities
+    """
+    upper_obj: RigidObject = env.scene[upper_object_cfg.name]
+    lower_obj: RigidObject = env.scene[lower_object_cfg.name]
+
+    # Check if upper object is lifted
+    upper_height = upper_obj.data.root_pos_w[:, 2] - table_height
+    upper_lifted = (upper_height - upper_size / 2.0) > lift_threshold
+
+    # XY alignment check (tighter for LEGO knobs)
+    xy_dist = torch.norm(
+        upper_obj.data.root_pos_w[:, :2] - lower_obj.data.root_pos_w[:, :2],
+        dim=-1
+    )
+    xy_aligned = xy_dist < xy_threshold
+
+    # Height check
+    target_height = lower_obj.data.root_pos_w[:, 2] + lower_size / 2.0 + upper_size / 2.0
+    height_diff = torch.abs(upper_obj.data.root_pos_w[:, 2] - target_height)
+    at_correct_height = height_diff < 0.02  # 2cm tolerance
+
+    # Rotation alignment check (CRITICAL for LEGO knobs!)
+    # Extract yaw (Z-axis rotation) from quaternions
+    upper_quat = upper_obj.data.root_quat_w  # (N, 4) - [w, x, y, z]
+    lower_quat = lower_obj.data.root_quat_w
+
+    # Compute relative rotation (simplified yaw difference)
+    # For LEGO, we primarily care about yaw (rotation around Z)
+    # Convert quaternion to yaw: yaw = atan2(2(w*z + x*y), 1 - 2(y^2 + z^2))
+    upper_yaw = torch.atan2(
+        2 * (upper_quat[:, 0] * upper_quat[:, 3] + upper_quat[:, 1] * upper_quat[:, 2]),
+        1 - 2 * (upper_quat[:, 2]**2 + upper_quat[:, 3]**2)
+    )
+    lower_yaw = torch.atan2(
+        2 * (lower_quat[:, 0] * lower_quat[:, 3] + lower_quat[:, 1] * lower_quat[:, 2]),
+        1 - 2 * (lower_quat[:, 2]**2 + lower_quat[:, 3]**2)
+    )
+    
+    # Compute yaw difference (wrapped to [-pi, pi])
+    yaw_diff = torch.abs(upper_yaw - lower_yaw)
+    yaw_diff = torch.min(yaw_diff, 2 * torch.pi - yaw_diff)  # Handle wrapping
+    
+    rotation_aligned = yaw_diff < rotation_threshold
+
+    # All conditions must be true for knob-cavity alignment
+    knob_aligned = xy_aligned & at_correct_height & rotation_aligned & upper_lifted
+
+    # Provide smooth gradient as we approach alignment
+    # This helps policy learn fine-tuning
+    alignment_quality = (1.0 - xy_dist / xy_threshold) * (1.0 - yaw_diff / rotation_threshold)
+    alignment_quality = torch.clamp(alignment_quality, 0.0, 1.0) * upper_lifted.float()
+
+    # Return binary success + smooth gradient
+    return knob_aligned.float() + 0.5 * alignment_quality

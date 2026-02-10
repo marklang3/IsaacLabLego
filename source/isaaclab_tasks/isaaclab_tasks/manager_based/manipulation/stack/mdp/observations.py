@@ -530,3 +530,47 @@ def ee_frame_pose_in_base_frame(
         return ee_quat_in_base
     elif return_key is None:
         return torch.cat((ee_pos_in_base, ee_quat_in_base), dim=1)
+
+
+# ==============================================================================
+# 2-Cube Observation Functions (cube_2 and cube_3 only, no cube_1)
+# ==============================================================================
+
+def cube_2_position(
+    env: ManagerBasedRLEnv,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    cube_2_cfg: SceneEntityCfg = SceneEntityCfg("cube_2"),
+) -> torch.Tensor:
+    """Position of cube_2 relative to robot base."""
+    robot: Articulation = env.scene[robot_cfg.name]
+    cube_2: RigidObject = env.scene[cube_2_cfg.name]
+    return cube_2.data.root_pos_w - robot.data.root_pos_w[:, :3]
+
+
+def cube_2_orientation(
+    env: ManagerBasedRLEnv,
+    cube_2_cfg: SceneEntityCfg = SceneEntityCfg("cube_2"),
+) -> torch.Tensor:
+    """Orientation (quaternion) of cube_2 in world frame."""
+    cube_2: RigidObject = env.scene[cube_2_cfg.name]
+    return cube_2.data.root_quat_w
+
+
+def cube_3_position(
+    env: ManagerBasedRLEnv,
+    robot_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    cube_3_cfg: SceneEntityCfg = SceneEntityCfg("cube_3"),
+) -> torch.Tensor:
+    """Position of cube_3 relative to robot base."""
+    robot: Articulation = env.scene[robot_cfg.name]
+    cube_3: RigidObject = env.scene[cube_3_cfg.name]
+    return cube_3.data.root_pos_w - robot.data.root_pos_w[:, :3]
+
+
+def cube_3_orientation(
+    env: ManagerBasedRLEnv,
+    cube_3_cfg: SceneEntityCfg = SceneEntityCfg("cube_3"),
+) -> torch.Tensor:
+    """Orientation (quaternion) of cube_3 in world frame."""
+    cube_3: RigidObject = env.scene[cube_3_cfg.name]
+    return cube_3.data.root_quat_w

@@ -17,6 +17,11 @@ from . import (
     stack_ik_rel_visuomotor_env_cfg,
     stack_joint_pos_env_cfg,
     stack_joint_pos_instance_randomize_env_cfg,
+    stack_2cube_env_cfg,
+    stack_2cube_ik_rel_env_cfg,
+    stack_2cube_lego_joint_pos_rl_env_cfg,
+    stack_2cube_smooth_ik_rel_env_cfg,
+    stack_2cube_smooth_ik_rel_env_cfg_v2,
 )
 
 ##
@@ -56,6 +61,7 @@ gym.register(
     entry_point="isaaclab.envs:ManagerBasedRLEnv",
     kwargs={
         "env_cfg_entry_point": stack_ik_rel_env_cfg.FrankaCubeStackEnvCfg,
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
         "robomimic_bc_cfg_entry_point": os.path.join(agents.__path__[0], "robomimic/bc_rnn_low_dim.json"),
     },
     disable_env_checker=True,
@@ -128,3 +134,52 @@ gym.register(
     },
     disable_env_checker=True,
 )
+
+##
+# 2-Cube Stack (Matches IsaacGym Exactly)
+##
+
+gym.register(
+    id="Isaac-Stack-2Cube-Franka-IK-Rel-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": stack_2cube_ik_rel_env_cfg.Franka2CubeStackIKEnvCfg,
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_sac_cfg.yaml",
+    },
+    disable_env_checker=True,
+)
+"""2-cube stacking task matching IsaacGym's FrankaCubeStack exactly (PPO or SAC)."""
+
+gym.register(
+    id="Isaac-Stack-2Cube-Smooth-Franka-IK-Rel-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": stack_2cube_smooth_ik_rel_env_cfg.Franka2CubeStackSmoothIKEnvCfg,
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+    },
+    disable_env_checker=True,
+)
+"""2-cube stacking with SMOOTH CUBES (diagnostic/testing - should learn faster than LEGO)."""
+
+gym.register(
+    id="Isaac-Stack-2Cube-Smooth-Blocks-Franka-IK-Rel-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": stack_2cube_smooth_ik_rel_env_cfg_v2.Franka2CubeStackSmoothIKEnvCfgV2,
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+    },
+    disable_env_checker=True,
+)
+"""2-cube stacking with SMOOTH BLOCKS from original Isaac assets (for baseline comparison)."""
+
+gym.register(
+    id="Isaac-Stack-2Cube-LEGO-Franka-JointPos-RL-v0",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": stack_2cube_lego_joint_pos_rl_env_cfg.Franka2CubeStackLegoJointPosRLEnvCfg,
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+    },
+    disable_env_checker=True,
+)
+"""LEGO 2-cube stacking with joint position control and precision rewards (knob-cavity alignment)."""
