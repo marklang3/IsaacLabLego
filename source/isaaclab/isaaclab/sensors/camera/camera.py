@@ -674,10 +674,29 @@ class Camera(SensorBase):
         # convert data into torch tensor
         data = convert_to_torch(data, device=self.device)
 
+        # Handle empty data during initialization (before first render)
+        height, width = self.image_shape
+        if data.numel() == 0:
+            # Return zero-filled tensor with correct shape for initialization
+            # Use uint8 for images, float32 for depth/distance
+            if name in ["distance_to_camera", "distance_to_image_plane", "depth"]:
+                dtype = torch.float32
+            else:
+                dtype = torch.uint8
+
+            if name in ["semantic_segmentation", "instance_segmentation_fast", "instance_id_segmentation_fast",
+                        "distance_to_camera", "distance_to_image_plane", "depth"]:
+                return torch.zeros((height, width, 1), dtype=dtype, device=self.device), info
+            elif name in ["rgb", "normals"]:
+                return torch.zeros((height, width, 3), dtype=dtype, device=self.device), info
+            elif name == "motion_vectors":
+                return torch.zeros((height, width, 2), dtype=dtype, device=self.device), info
+            else:
+                return torch.zeros((height, width, 4), dtype=dtype, device=self.device), info
+
         # process data for different segmentation types
         # Note: Replicator returns raw buffers of dtype int32 for segmentation types
         #   so we need to convert them to uint8 4 channel images for colorized types
-        height, width = self.image_shape
         if name == "semantic_segmentation":
             if self.cfg.colorize_semantic_segmentation:
                 data = data.view(torch.uint8).reshape(height, width, -1)

@@ -574,3 +574,85 @@ def cube_3_orientation(
     """Orientation (quaternion) of cube_3 in world frame."""
     cube_3: RigidObject = env.scene[cube_3_cfg.name]
     return cube_3.data.root_quat_w
+
+
+def object_obs_2cube(
+    env: ManagerBasedRLEnv,
+    cube_2_cfg: SceneEntityCfg = SceneEntityCfg("cube_2"),
+    cube_3_cfg: SceneEntityCfg = SceneEntityCfg("cube_3"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+):
+    """
+    Object observations for 2-cube task (in world frame):
+        cube_2 pos,
+        cube_2 quat,
+        cube_3 pos,
+        cube_3 quat,
+        gripper to cube_2,
+        gripper to cube_3,
+        cube_2 to cube_3,
+    """
+    cube_2: RigidObject = env.scene[cube_2_cfg.name]
+    cube_3: RigidObject = env.scene[cube_3_cfg.name]
+    ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
+
+    cube_2_pos_w = cube_2.data.root_pos_w
+    cube_2_quat_w = cube_2.data.root_quat_w
+
+    cube_3_pos_w = cube_3.data.root_pos_w
+    cube_3_quat_w = cube_3.data.root_quat_w
+
+    ee_pos_w = ee_frame.data.target_pos_w[:, 0, :]
+    gripper_to_cube_2 = cube_2_pos_w - ee_pos_w
+    gripper_to_cube_3 = cube_3_pos_w - ee_pos_w
+
+    cube_2_to_3 = cube_2_pos_w - cube_3_pos_w
+
+    return torch.cat(
+        (
+            cube_2_pos_w - env.scene.env_origins,
+            cube_2_quat_w,
+            cube_3_pos_w - env.scene.env_origins,
+            cube_3_quat_w,
+            gripper_to_cube_2,
+            gripper_to_cube_3,
+            cube_2_to_3,
+        ),
+        dim=1,
+    )
+
+
+def object_obs_2cube_relative_only(
+    env: ManagerBasedRLEnv,
+    cube_2_cfg: SceneEntityCfg = SceneEntityCfg("cube_2"),
+    cube_3_cfg: SceneEntityCfg = SceneEntityCfg("cube_3"),
+    ee_frame_cfg: SceneEntityCfg = SceneEntityCfg("ee_frame"),
+):
+    """
+    Object observations for 2-cube task - RELATIVE ONLY (no absolute poses):
+        gripper to cube_2 (3D),
+        gripper to cube_3 (3D),
+        cube_2 to cube_3 (3D),
+    Total: 9D
+    """
+    cube_2: RigidObject = env.scene[cube_2_cfg.name]
+    cube_3: RigidObject = env.scene[cube_3_cfg.name]
+    ee_frame: FrameTransformer = env.scene[ee_frame_cfg.name]
+
+    cube_2_pos_w = cube_2.data.root_pos_w
+    cube_3_pos_w = cube_3.data.root_pos_w
+
+    ee_pos_w = ee_frame.data.target_pos_w[:, 0, :]
+    gripper_to_cube_2 = cube_2_pos_w - ee_pos_w
+    gripper_to_cube_3 = cube_3_pos_w - ee_pos_w
+
+    cube_2_to_3 = cube_2_pos_w - cube_3_pos_w
+
+    return torch.cat(
+        (
+            gripper_to_cube_2,
+            gripper_to_cube_3,
+            cube_2_to_3,
+        ),
+        dim=1,
+    )

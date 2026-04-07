@@ -91,7 +91,7 @@ class ObservationsCfg:
         gripper_pos = ObsTerm(func=mdp.gripper_pos)
 
         def __post_init__(self):
-            self.enable_corruption = False  # Disable observation noise for faster learning
+            self.enable_corruption = True
             self.concatenate_terms = True
 
     # observation groups
@@ -110,10 +110,10 @@ class RewardsCfg:
             "ee_frame_cfg": SceneEntityCfg("ee_frame"),
             "upper_object_cfg": SceneEntityCfg("cube_2"),
             "lower_object_cfg": SceneEntityCfg("cube_3"),
-            "upper_size": 0.05,  # Smooth red blocks are 50mm (0.05m)
-            "lower_size": 0.05,
-            "table_height": 0.0,  # Table at origin
-            "lift_threshold": 0.01,  # 10mm lift threshold
+            "upper_size": 0.0288,  # PRE-SCALED brick size (matches successful Feb 20 run)
+            "lower_size": 0.0288,
+            "table_height": 0.0,   # Match successful Feb 20 run
+            "lift_threshold": 0.01, # Match successful Feb 20 run
             "r_dist_scale": 0.1,   # Match IsaacGym - low weight for reaching
             "r_lift_scale": 1.5,   # Match IsaacGym
             "r_align_scale": 2.0,  # Match IsaacGym
@@ -130,27 +130,15 @@ class RewardsCfg:
             "ee_frame_cfg": SceneEntityCfg("ee_frame"),
             "upper_object_cfg": SceneEntityCfg("cube_1"),
             "lower_object_cfg": SceneEntityCfg("cube_2"),
-            "upper_size": 0.05,
-            "lower_size": 0.05,
-            "table_height": 0.0,
-            "lift_threshold": 0.01,
+            "upper_size": 0.0702,  # Also scaled 1.5x
+            "lower_size": 0.0702,  # Also scaled 1.5x
+            "table_height": 1.025,
             "r_dist_scale": 0.1,   # Match IsaacGym
             "r_lift_scale": 1.5,   # Match IsaacGym
             "r_align_scale": 2.0,  # Match IsaacGym
             "r_stack_scale": 16.0, # Match IsaacGym
         },
         weight=0.0,  # Disabled in Stage 1
-    )
-
-    # Rotation alignment reward for LEGO transfer preparation
-    rotation_alignment_2_3 = RewTerm(
-        func=mdp.object_orientation_alignment,
-        params={
-            "upper_object_cfg": SceneEntityCfg("cube_2"),
-            "lower_object_cfg": SceneEntityCfg("cube_3"),
-            "std": 0.5,  # Tanh smoothing parameter
-        },
-        weight=1.5,  # Between lift (1.5) and align (2.0)
     )
 
     # Action penalties for smooth motion

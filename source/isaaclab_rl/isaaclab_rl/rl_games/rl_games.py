@@ -181,7 +181,11 @@ class RlGamesVecEnvWrapper(IVecEnv):
         space = self.unwrapped.single_observation_space
         clip = self._clip_obs
         if not self._concate_obs_groups:
-            policy_space = {grp: gym.spaces.Box(-clip, clip, space.get(grp).shape) for grp in self._obs_groups["obs"]}
+            policy_space = {}
+            for grp in self._obs_groups["obs"]:
+                grp_space = space.get(grp)
+                if grp_space is not None:
+                    policy_space[grp] = gym.spaces.Box(low=-clip, high=clip, shape=grp_space.shape, dtype=grp_space.dtype)
             return gym.spaces.Dict(policy_space)
         else:
             shapes = [space.get(group).shape for group in self._obs_groups["obs"]]

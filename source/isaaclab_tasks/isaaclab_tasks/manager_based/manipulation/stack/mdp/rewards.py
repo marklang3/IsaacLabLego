@@ -467,6 +467,9 @@ def isaacgym_combined_reward(
     r_lift_scale: float = 1.0,
     r_align_scale: float = 1.0,
     r_stack_scale: float = 2.0,
+    xy_threshold: float = 0.02,
+    z_threshold: float = 0.02,
+    gripper_away_threshold: float = 0.04,
 ) -> torch.Tensor:
     """
     Combined reward following IsaacGym's exact approach:
@@ -483,7 +486,7 @@ def isaacgym_combined_reward(
     )
     stack_r = isaacgym_stack_reward(
         env, robot_cfg, ee_frame_cfg, upper_object_cfg, lower_object_cfg,
-        upper_size, lower_size
+        upper_size, lower_size, xy_threshold, z_threshold, gripper_away_threshold
     )
 
     # Either/or composition matching IsaacGym exactly:
@@ -641,3 +644,66 @@ def knob_cavity_alignment_reward(
 
     # Return binary success + smooth gradient
     return knob_aligned.float() + 0.5 * alignment_quality
+
+
+def continuous_snap_reward(
+    env: ManagerBasedRLEnv,
+    upper_object_cfg: SceneEntityCfg,
+    lower_object_cfg: SceneEntityCfg,
+    expected_stack_height: float,
+    position_alpha: float = 50.0,
+    height_alpha: float = 100.0,
+    velocity_bonus_threshold: float = 0.02,
+    max_bonus: float = 10.0,
+) -> torch.Tensor:
+    """Continuous snap score reward without physics discontinuities.
+    
+    Uses smooth exponential decay: snap_score = exp(-alpha * distance) * exp(-beta * height_error)
+    This creates smooth gradients for learning without requiring actual physical constraints.
+    
+    Args:
+        env: The environment.
+        upper_object_cfg: Configuration for upper object (cube to place).
+        lower_object_cfg: Configuration for lower object (base cube).
+        expected_stack_height: Expected vertical separation (e.g., 0.05 for 5cm cubes).
+        position_alpha: Sharpness of position alignment reward (higher = steeper).
+        height_alpha: Sharpness of height alignment reward (higher = steeper).
+        velocity_bonus_threshold: Velocity below which stability bonus applies.
+        max_bonus: Maximum reward when perfectly aligned.
+        
+    Returns:
+        Continuous reward tensor (num_envs,) ranging from ~0 to max_bonus.
+    """
+    upper_obj: RigidObject = env.scene[upper_object_cfg.name]
+    lower_obj: RigidObject = env.scene[lower_object_cfg.name]
+    
+    # Get positions
+    upper_pos = upper_obj.data.root_pos_w
+    lower_pos = lower_obj.data.root_pos_w
+    
+    # XY distance (horizontal alignment)
+    xy_distance = torch.norm(upper_pos[:, :2] - lower_pos[:, :2], dim=-1)
+    
+    # Z distance from target height
+    target_z = lower_pos[:, 2] + expected_stack_height
+    z_error = torch.abs(upper_pos[:, 2] - target_z)
+    
+    # Exponential decay rewards (smooth gradients!)
+    position_score = torch.exp(-position_alpha * xy_distance)
+    height_score = torch.exp(-height_alpha * z_error)
+    
+    # Combined snap score
+    snap_score = position_score * height_score
+    
+    # Velocity bonus: extra reward if cube is nearly stationary when aligned
+    upper_vel = torch.norm(upper_obj.data.root_lin_vel_w, dim=-1)
+    velocity_bonus = torch.where(
+        (upper_vel < velocity_bonus_threshold) & (snap_score > 0.5),  # Only when well-aligned
+        torch.ones_like(snap_score),
+        torch.zeros_like(snap_score)
+    )
+    
+    # Scale to max_bonus
+    reward = max_bonus * (snap_score + 0.2 * velocity_bonus)
+    
+    return reward

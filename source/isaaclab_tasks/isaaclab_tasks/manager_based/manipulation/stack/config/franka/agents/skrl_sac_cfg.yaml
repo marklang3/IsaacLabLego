@@ -1,0 +1,107 @@
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+# SAC configuration for 2-cube stacking task
+# Using SAC for better stability vs PPO's training crashes
+
+seed: 42
+
+
+# Models are instantiated using skrl's model instantiator utility
+# https://skrl.readthedocs.io/en/latest/api/utils/model_instantiators.html
+models:
+  separate: True  # SAC uses separate actor and critic networks
+  policy:  # Actor network (deterministic policy + Gaussian noise)
+    class: GaussianMixin
+    clip_actions: False
+    clip_log_std: True
+    min_log_std: -20.0
+    max_log_std: 2.0
+    initial_log_std: 0.0
+    network:
+      - name: net
+        input: OBSERVATIONS
+        layers: [256, 128, 64]
+        activations: elu
+    output: ACTIONS
+  critic_1:  # First Q-network (twin Q-networks for stability)
+    class: DeterministicMixin
+    clip_actions: False
+    network:
+      - name: net
+        input: STATES_ACTIONS
+        layers: [256, 128, 64]
+        activations: elu
+    output: ONE
+  critic_2:  # Second Q-network (twin Q-networks for stability)
+    class: DeterministicMixin
+    clip_actions: False
+    network:
+      - name: net
+        input: STATES_ACTIONS
+        layers: [256, 128, 64]
+        activations: elu
+    output: ONE
+
+
+# Replay memory for off-policy learning
+# https://skrl.readthedocs.io/en/latest/api/memories/random.html
+memory:
+  class: RandomMemory
+  memory_size: 100000  # 100k transitions (reduced to avoid OOM with 4096 envs)
+
+
+# SAC agent configuration (field names are from SAC_DEFAULT_CONFIG)
+# https://skrl.readthedocs.io/en/latest/api/agents/sac.html
+agent:
+  class: SAC
+
+  # Discount and learning
+  discount_factor: 0.99
+  polyak: 0.005  # Soft update coefficient for target networks
+
+  # Learning rates
+  actor_learning_rate: 5.0e-4  # Match IsaacGym's PPO LR
+  critic_learning_rate: 5.0e-4
+  learning_rate_scheduler: null  # Can use KLAdaptiveLR if needed
+  learning_rate_scheduler_kwargs: null
+
+  # Entropy regularization (key SAC feature for exploration)
+  entropy_learning_rate: 5.0e-4
+  initial_entropy_value: 1.0  # Auto-tuned during training
+  target_entropy: null  # Auto-computed as -action_dim
+
+  # Training configuration
+  batch_size: 256  # Samples per gradient update
+  gradient_steps: 1  # Gradient steps per environment step
+  random_timesteps: 10000  # Pure exploration steps at start
+  learning_starts: 10000  # Start learning after this many steps
+
+  # Gradient clipping
+  grad_norm_clip: 1.0
+
+  # Preprocessing
+  state_preprocessor: RunningStandardScaler
+  state_preprocessor_kwargs: null
+  value_preprocessor: null
+  value_preprocessor_kwargs: null
+
+  # Reward scaling (matching IsaacGym)
+  rewards_shaper_scale: 1.0  # No reward scaling (already scaled in env)
+
+  # Logging and checkpointing
+  experiment:
+    directory: "franka_stack_sac"
+    experiment_name: ""
+    write_interval: 100  # Log every 100 steps
+    checkpoint_interval: 10000  # Save every 10k steps
+
+
+# Sequential trainer
+# https://skrl.readthedocs.io/en/latest/api/trainers/sequential.html
+trainer:
+  class: SequentialTrainer
+  timesteps: 10000000  # 10M timesteps (equivalent to ~10k epochs with 4096 envs)
+  environment_info: log

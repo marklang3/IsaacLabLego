@@ -50,7 +50,7 @@ class EventCfg:
         func=franka_stack_events.randomize_object_pose,
         mode="reset",
         params={
-            "pose_range": {"x": (0.4, 0.6), "y": (-0.10, 0.10), "z": (0.0203, 0.0203), "yaw": (-1.0, 1, 0)},
+            "pose_range": {"x": (0.4, 0.6), "y": (-0.10, 0.10), "z": (0.025, 0.025), "yaw": (-1.0, 1, 0)},
             "min_separation": 0.1,
             "asset_cfgs": [SceneEntityCfg("cube_1"), SceneEntityCfg("cube_2"), SceneEntityCfg("cube_3")],
         },
@@ -93,44 +93,45 @@ class FrankaCubeStackEnvCfg(StackEnvCfg):
         self.gripper_threshold = 0.005
 
         # Rigid body properties of each cube
+        # INCREASED solver strength to prevent table penetration
         cube_properties = RigidBodyPropertiesCfg(
-            solver_position_iteration_count=16,  # Higher than IsaacGym (8) due to LEGO brick stud geometry - more contact points require better resolution
-            solver_velocity_iteration_count=1,
+            solver_position_iteration_count=32,  # Increased from 16 to prevent penetration through table
+            solver_velocity_iteration_count=2,   # Increased from 1 for better contact resolution
             max_angular_velocity=1000.0,
             max_linear_velocity=1000.0,
-            max_depenetration_velocity=5.0,
+            max_depenetration_velocity=1.0,      # Reduced from 5.0 to prevent overshoot/jitter
             disable_gravity=False,
         )
 
-        # Set each stacking cube deterministically
+        # Set each stacking cube deterministically (using smooth red blocks from Isaac assets)
         self.scene.cube_1 = RigidObjectCfg(
-            prim_path="{ENV_REGEX_NS}/c_lego_duplo_1",   
-            init_state=RigidObjectCfg.InitialStateCfg(pos=[0.40,  0.00, 0.0203], rot=[1, 0, 0, 0]),
+            prim_path="{ENV_REGEX_NS}/Cube_1",
+            init_state=RigidObjectCfg.InitialStateCfg(pos=[0.40,  0.00, 0.025], rot=[1, 0, 0, 0]),
             spawn=UsdFileCfg(
-                usd_path="props/c_lego_duplo.usd",
-                scale=(1.5, 1.5, 1.5),
+                usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/red_block.usd",
+                scale=(1.0, 1.0, 1.0),  # Native 50mm smooth red blocks
                 rigid_props=cube_properties,
                 semantic_tags=[("class", "cube_1")],
             ),
         )
 
         self.scene.cube_2 = RigidObjectCfg(
-            prim_path="{ENV_REGEX_NS}/c_lego_duplo_2",   
-            init_state=RigidObjectCfg.InitialStateCfg(pos=[0.55,  0.05, 0.0203], rot=[1, 0, 0, 0]),
+            prim_path="{ENV_REGEX_NS}/Cube_2",
+            init_state=RigidObjectCfg.InitialStateCfg(pos=[0.55,  0.05, 0.025], rot=[1, 0, 0, 0]),
             spawn=UsdFileCfg(
-                usd_path="props/c_lego_duplo.usd",
-                scale=(1.5, 1.5, 1.5),
+                usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/red_block.usd",
+                scale=(1.0, 1.0, 1.0),  # Native 50mm smooth red blocks
                 rigid_props=cube_properties,
                 semantic_tags=[("class", "cube_2")],
             ),
         )
 
         self.scene.cube_3 = RigidObjectCfg(
-            prim_path="{ENV_REGEX_NS}/c_lego_duplo_3",  
-            init_state=RigidObjectCfg.InitialStateCfg(pos=[0.60, -0.10, 0.0203], rot=[1, 0, 0, 0]),
+            prim_path="{ENV_REGEX_NS}/Cube_3",
+            init_state=RigidObjectCfg.InitialStateCfg(pos=[0.60, -0.10, 0.025], rot=[1, 0, 0, 0]),
             spawn=UsdFileCfg(
-                usd_path="props/c_lego_duplo.usd",
-                scale=(1.5, 1.5, 1.5),
+                usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/red_block.usd",
+                scale=(1.0, 1.0, 1.0),  # Native 50mm smooth red blocks
                 rigid_props=cube_properties,
                 semantic_tags=[("class", "cube_3")],
             ),

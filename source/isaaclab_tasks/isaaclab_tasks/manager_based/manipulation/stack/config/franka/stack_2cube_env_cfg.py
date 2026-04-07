@@ -50,7 +50,7 @@ class EventCfg:
         func=franka_stack_events.randomize_object_pose,
         mode="reset",
         params={
-            "pose_range": {"x": (0.4, 0.6), "y": (-0.10, 0.10), "z": (0.0203, 0.0203), "yaw": (-1.0, 1, 0)},
+            "pose_range": {"x": (0.4, 0.6), "y": (-0.10, 0.10), "z": (0.025, 0.025), "yaw": (-1.0, 1, 0)},
             "min_separation": 0.1,
             "asset_cfgs": [SceneEntityCfg("cube_2"), SceneEntityCfg("cube_3")],  # Only 2 cubes to match IsaacGym
         },
@@ -94,33 +94,35 @@ class Franka2CubeStackEnvCfg(StackEnvCfg):
         self.gripper_threshold = 0.005
 
         # Rigid body properties of each cube
+        # INCREASED solver iterations to prevent table penetration
         cube_properties = RigidBodyPropertiesCfg(
-            solver_position_iteration_count=16,  # Higher than IsaacGym (8) due to LEGO brick stud geometry - more contact points require better resolution
-            solver_velocity_iteration_count=1,
+            solver_position_iteration_count=32,  # Increased from 16 to prevent penetration
+            solver_velocity_iteration_count=2,   # Increased from 1 for better contact resolution
             max_angular_velocity=1000.0,
             max_linear_velocity=1000.0,
-            max_depenetration_velocity=5.0,
+            max_depenetration_velocity=1.0,      # Reduced from 5.0 to prevent overshoot/jitter
             disable_gravity=False,
         )
 
         # Set each stacking cube deterministically (2 cubes only - matching IsaacGym)
+        # Using smooth red blocks (Feb 21 run: 53.2 reward @ epoch 10200!)
         self.scene.cube_2 = RigidObjectCfg(
-            prim_path="{ENV_REGEX_NS}/c_lego_duplo_2",   
-            init_state=RigidObjectCfg.InitialStateCfg(pos=[0.55,  0.05, 0.0203], rot=[1, 0, 0, 0]),
+            prim_path="{ENV_REGEX_NS}/Cube_2",
+            init_state=RigidObjectCfg.InitialStateCfg(pos=[0.55,  0.05, 0.025], rot=[1, 0, 0, 0]),
             spawn=UsdFileCfg(
-                usd_path="props/c_lego_duplo.usd",
-                scale=(1.5, 1.5, 1.5),
+                usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/red_block.usd",
+                scale=(1.0, 1.0, 1.0),  # Native 50mm smooth red blocks
                 rigid_props=cube_properties,
                 semantic_tags=[("class", "cube_2")],
             ),
         )
 
         self.scene.cube_3 = RigidObjectCfg(
-            prim_path="{ENV_REGEX_NS}/c_lego_duplo_3",  
-            init_state=RigidObjectCfg.InitialStateCfg(pos=[0.60, -0.10, 0.0203], rot=[1, 0, 0, 0]),
+            prim_path="{ENV_REGEX_NS}/Cube_3",
+            init_state=RigidObjectCfg.InitialStateCfg(pos=[0.60, -0.10, 0.025], rot=[1, 0, 0, 0]),
             spawn=UsdFileCfg(
-                usd_path="props/c_lego_duplo.usd",
-                scale=(1.5, 1.5, 1.5),
+                usd_path=f"{ISAAC_NUCLEUS_DIR}/Props/Blocks/red_block.usd",
+                scale=(1.0, 1.0, 1.0),  # Native 50mm smooth red blocks
                 rigid_props=cube_properties,
                 semantic_tags=[("class", "cube_3")],
             ),
@@ -158,7 +160,7 @@ class Franka2CubeStackEnvCfg(StackEnvCfg):
             ],
         )
 
-        # 2-Cube Configuration: Add cube_2 and cube_3 observations
+        # 2-Cube Configuration: Use rich observations with spatial relationships
 
         # Remove 3-cube observations that reference cube_1
         if hasattr(self.observations.policy, 'object'):
@@ -168,16 +170,12 @@ class Franka2CubeStackEnvCfg(StackEnvCfg):
         if hasattr(self.observations.policy, 'cube_orientations'):
             delattr(self.observations.policy, 'cube_orientations')
 
-        # Add 2-cube specific observations (cube_2 and cube_3 only)
+        # Add 2-cube rich observations with spatial relationships
+        # This provides the same quality of information as the successful 3-cube task,
+        # including gripper-to-cube and cube-to-cube distances for spatial reasoning
         from isaaclab.managers import ObservationTermCfg as ObsTerm
 
-        # Cube 2 position and orientation (the cube we need to pick up)
-        self.observations.policy.cube_2_pos = ObsTerm(func=mdp.cube_2_position)
-        self.observations.policy.cube_2_quat = ObsTerm(func=mdp.cube_2_orientation)
-
-        # Cube 3 position and orientation (the base cube we stack on)
-        self.observations.policy.cube_3_pos = ObsTerm(func=mdp.cube_3_position)
-        self.observations.policy.cube_3_quat = ObsTerm(func=mdp.cube_3_orientation)
+        self.observations.policy.object = ObsTerm(func=mdp.object_obs_2cube)
 
         # Disable cube_1 reward (only stack cube_2 on cube_3)
         if hasattr(self.rewards, 'stack_cube_1_on_2'):
