@@ -1,0 +1,1783 @@
+\documentclass[12pt,a4paper,oneside]{report}
+
+% Encoding and fonts
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{url}
+
+% Math and symbols
+\usepackage{amsmath,amssymb}
+
+% Figures, tables, code
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+
+% Layout and verbatim
+\usepackage{geometry}
+\usepackage{fancyvrb}
+\geometry{margin=1in}
+
+% Links and citations
+\usepackage{hyperref}
+\usepackage{cite}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue,
+    pdftitle={Reinforcement Learning for Robotic LEGO Assembly},
+    pdfauthor={Masters Thesis}
+}
+
+% Listings configuration
+\lstset{
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    language=Python,
+    showstringspaces=false,
+    mathescape=true,
+    columns=fullflexible
+}
+
+\title{Reinforcement Learning for Robotic LEGO Assembly: A GPU-Accelerated Approach to Precision Manipulation}
+\author{Mark Langtry \\ Immersive Software Engineering \\ University of Limerick}
+\date{2026}
+
+\begin{document}
+
+% Title page
+\maketitle
+\thispagestyle{empty}
+\cleardoublepage
+
+% Abstract
+\pagenumbering{roman}
+\chapter*{Abstract}
+\addcontentsline{toc}{chapter}{Abstract}
+
+Precision manipulation remains a fundamental challenge in robotics, particularly for contact-rich assembly tasks requiring sub-centimeter accuracy. While reinforcement learning has emerged as a promising approach for acquiring manipulation skills through interaction rather than programming, the computational demands of precision tasks have limited exploration of large-scale parallel training and the trade-offs between realistic simulation and feasible learning. This thesis investigates these trade-offs through a case study of robotic stacking, motivated by the challenge of LEGO brick assembly where tight geometric tolerances ($\pm$0.1\,mm) and interlocking mechanics require both precision and contact stability.
+
+The training pipeline achieves 4,096 parallel environments using Isaac Sim on a single NVIDIA RTX 4500 GPU, enabling complete policy training in 80--100 hours. The system employs Proximal Policy Optimization with a 58-dimensional observation space incorporating spatial relationship features (gripper-to-object and object-to-object distances) alongside proprioception and absolute pose information. Comprehensive ablation studies establish that proprioception, end-effector pose, and spatial relationships are critical for learning, while absolute coordinate frames are redundant when relative spatial features are present---a finding with significant implications for sim-to-real transfer robustness. Investigation of parallel environment scaling reveals a 7.6$\times$ learning speed advantage at 4,096 environments compared to 512 environments, attributable to batch diversity effects on gradient quality beyond simple data throughput gains.\footnote{FPS (Frames Per Second) in this work refers to aggregate simulation steps per second across all 4,096 parallel environments, equivalent to approximately 8.5 steps/second per individual environment at 35,000 FPS.}
+
+A critical finding concerns simulation fidelity trade-offs: physically accurate LEGO interlocking mechanics using full contact simulation proved fundamentally incompatible with GPU-accelerated training, achieving only 2,000 FPS with unstable contact dynamics that prevented policy learning. This thesis demonstrates that constraint-based approximations of interlocking behaviour maintain manipulation task complexity while enabling tractable learning at 35,000 FPS (17.5$\times$ improvement). Trained policies achieve 70\% position success and 20\% combined position+rotation success on strict alignment thresholds (5\,mm position, 5.7$^\circ$ rotation) for smooth cube stacking, validating the approach for precision manipulation research. These results establish design principles for matching simulation fidelity to learning objectives in manipulation systems, demonstrating when simplified physics models enable research progress that high-fidelity simulation cannot support.
+
+\cleardoublepage
+
+% Acknowledgments
+\chapter*{Acknowledgments}
+\addcontentsline{toc}{chapter}{Acknowledgments}
+
+I would like to express my gratitude to my supervisor Dr Salaheddin Alakkari for guidance and support throughout this research. I thank Analog Devices for providing computational resources, including access to NVIDIA RTX 4500 GPUs that enabled the large-scale parallel simulation experiments central to this work.
+I thank the staff of Immersive Software Engineering for the education and support that have led me here.
+I acknowledge the Isaac Lab development team at NVIDIA for creating an excellent GPU-accelerated robotics simulation platform and the broader open-source robotics community whose tools and libraries made this research possible.
+Finally, I thank my family and friends for all their encouragement and support.
+
+\cleardoublepage
+
+% Table of contents
+\tableofcontents
+\cleardoublepage
+
+% List of figures
+\listoffigures
+\cleardoublepage
+
+% Start main content
+\pagenumbering{arabic}
+
+\chapter{Introduction}
+
+\section{Motivation}
+
+In recent years, the automation of precise assembly tasks has become important for manufacturing competitiveness, yet fine manipulation of small objects remains a persistent challenge in robotics\cite{TrendsChallengesRobot2019}. Although industrial robots excel at repetitive, high-volume tasks with predefined trajectories, they struggle to adapt to the variability of small-part assembly and low-volume production environments. This lack of flexibility has led to a growing demand for collaborative robots capable of learning manipulation strategies rather than following programmed routines.
+
+One technique enabling this flexibility is reinforcement learning (RL), which allows robots to learn manipulation skills through trial-and-error interaction with their environment \cite{argallSurveyRobotLearning2009, campanaReinforcementLearningRoboticb}. Advances in policy gradient methods like Proximal Policy Optimisation (PPO) \cite{schulmanProximalPolicyOptimization2017} and Soft Actor-Critic (SAC) \cite{haarnojaSoftActorCriticOffPolicy2018b} combined with breakthroughs in sim-to-real transfer \cite{tobinDomainRandomizationTransferring2017a, wangOneshotSimtorealTransfer2024, chengZeroshotSimtorealTransfer2023} have made RL increasingly viable for physical robotic systems. However, the sample complexity of RL presents a practical barrier: training precision manipulation policies requires millions of environment interactions \cite{koberReinforcementLearningRoboticsc}, which is infeasible on physical hardware.
+
+GPU-accelerated physics simulation offers a solution by enabling massively parallel training environments \cite{makoviychukIsaacGymHigh2021b, nvidiaIsaacLabUnified2024}. However, a fundamental tension exists between simulation fidelity and computational tractability: physically accurate contact dynamics for precision assembly (e.g., LEGO interlocking with 20+ simultaneous contact points) may be too computationally expensive for large-scale parallel simulation \cite{WelcomePhysXPhysX}, while simplified physics may fail to capture task complexity. The optimal balance between realism and learnability remains an open research question.
+
+This research, conducted in conjunction with the Asimov team at ADI Limerick, investigates these simulation fidelity tradeoffs through precision manipulation with a Franka Emika FR3 collaborative robot in GPU-accelerated environments. LEGO brick assembly serves as the motivating application: its tight geometric tolerances ($\pm$0.1 mm), interlocking mechanics, and standardised geometry provide a controlled benchmark for investigating contact-rich assembly. Although LEGO assembly is simple and intuitive for humans, it demonstrates many of the core difficulties of robotic manipulation, including precise object placement, error recovery, and generalisation across different configurations. The standardised nature of the bricks and the task itself provide a controlled environment for training and evaluation. Challenges encountered are relevant to other real-world assembly tasks such as electronics manufacturing, precise instrumentation, or customised product assembly \cite{zhuRobosuiteModularSimulation2025}. The FR3's compliant control and force-sensing capabilities are well-suited to contact-rich tasks \cite{zhangFrankaInterfaceFrankaPyPythonbased2020}, positioning this work for eventual hardware validation.
+
+The outcomes extend beyond specific applications. By systematically investigating when simplified physics models enable research progress that high-fidelity simulation cannot support, this work establishes design principles for matching simulation fidelity to learning objectives. These insights are relevant to electronics manufacturing, precision instrumentation, and other domains requiring sub-centimeter manipulation accuracy \cite{TrendsChallengesRobot2019}. The findings provide particular value for industries transitioning from mass production to mass customisation, where robots must handle diverse tasks without extensive reprogramming \cite{automate.orgBiggestAutomationChallenges2025}.
+
+\section{Problem Statement}
+
+The automation of fine manipulation tasks requiring sub-centimeter precision poses a significant challenge in robotics due to the high precision, spatial reasoning, and adaptability required. Unlike repetitive industrial operations, precision assembly tasks require robots to manipulate components with tight geometric tolerances while adapting to variations in conditions and configurations. LEGO brick assembly exemplifies these challenges with sub-millimeter interlocking tolerances, motivating this investigation of simulation-based learning approaches.
+
+Traditional programming methods rely heavily on preprogrammed trajectories and structured environments, succeeding only in highly controlled settings and failing when confronted with the variability of real-world manipulation tasks. Without scalable autonomous learning approaches, robotic systems cannot perform precise assembly in unstructured environments, limiting their application to low-volume manufacturing and collaborative robotics.
+
+Current research has not adequately addressed a fundamental tension in simulation-based reinforcement learning: physical accuracy often conflicts with learning scalability. LEGO interlocking mechanics require sub-millimetre tolerances across 20+ simultaneous contact points, creating computational barriers to GPU-accelerated parallel simulation. Comprehensive surveys of RL in robotics highlight both the promise and the remaining challenges in achieving scalable learning for precision tasks \cite{koberReinforcementLearningRoboticsc}. Clear guidelines for balancing simulation realism with training feasibility remain absent from the literature, presenting a significant barrier to developing simulation-based training systems for precision manipulation\cite{WelcomePhysXPhysX, argallSurveyRobotLearning2009}.
+
+\section{Research Questions}
+
+This thesis addresses the following research questions:
+
+\begin{enumerate}
+    \item \textbf{Can reinforcement learning enable sub-centimeter precision stacking in GPU-accelerated simulation?} Specifically, can policies achieve 5\,mm position accuracy and sub-6$^\circ$ rotation alignment on 2-cube stacking tasks?
+
+    \item \textbf{What observation space features are critical for learning precision manipulation?} How do spatial relationship features (gripper-to-object distances, object-to-object distances) affect policy learning compared to absolute position/orientation observations?
+
+    \item \textbf{How does parallel environment count affect RL training efficiency?} Beyond simple data throughput, what role does batch diversity play in convergence speed for manipulation tasks?
+
+    \item \textbf{Are physically accurate LEGO interlocking mechanics compatible with large-scale GPU simulation?} Can modern rigid-body physics engines handle the contact complexity of LEGO press-fit connections at the scale required for RL (4{,}096+ parallel environments)?
+
+    \item \textbf{What simulation abstractions maintain learning feasibility while preserving task difficulty?} If full physical accuracy proves intractable, can constraint-based mechanisms provide sufficient precision requirements for meaningful manipulation research?
+\end{enumerate}
+
+\section{Contributions}
+
+Below are the contributions this thesis has made to the field of GPU-accelerated reinforcement learning for precision manipulation:
+
+\begin{enumerate}
+    \item \textbf{Validated Precision Stacking Methodology}: Demonstrated that GPU-accelerated RL training can reliably improve strict geometric manipulation metrics under 4{,}096-environment training, including a combined position+rotation success increase from 15.94\% to 20.38\% and mean episode reward up to 411.80 (Section 4). The methodology combines physics stability tuning (32/2 PhysX solver iterations, GPU memory allocation configuration), fixed-joint snap constraints, orientation-aware reward shaping, and long-horizon checkpoint fine-tuning. Implementation guidelines for PhysX configuration and debugging methodology are provided in Sections 3.11.1 and 3.11.4.
+
+    \item \textbf{Observation Space Design for Manipulation}: Developed a 58-dimensional observation space that enables effective manipulation policy learning through systematic feature engineering (Section 3.11.4). The architecture combines 26D proprioception (actions, joint positions/velocities), 23D object state (absolute poses and spatial relationships), 7D end-effector pose, and 2D gripper state. Comprehensive ablation studies establish a clear feature importance hierarchy (Section 4.2.1): proprioception (43.34 reward, 89\% degradation), end-effector pose (46.67 reward, 89\% degradation), and spatial relationships (28 reward, 93\% degradation) are all critical for learning, while gripper state shows moderate impact (212.76 reward, 48\% degradation) and absolute poses are redundant (428.72 reward, no degradation). The finding that spatial relationship features fully substitute for absolute coordinate frames has significant implications for sim-to-real transfer robustness.
+
+    \item \textbf{Environment Count Scaling Analysis}: Quantified the impact of parallel environment count on training efficiency, demonstrating 7.6$\times$ learning speed difference between 512 and 4{,}096 environments beyond simple data throughput (Section 4.1). The analysis reveals that the batch diversity that results from having more environments improves gradient quality and convergence speed.
+
+    \item \textbf{Simulation Fidelity Trade-offs for Precision Manipulation}: Through a case study of LEGO interlocking physics (Section 3.12), demonstrated when simulation simplification is necessary to enable learning. Full LEGO geometry (20+ contact points, elastic deformation, friction-based interlocking) proved computationally infeasible, achieving only 2k FPS with unstable contact dynamics. The constraint-based snap mechanism focuses the learning problem on geometric alignment and velocity control---the behaviours that transfer to real hardware---rather than on exploiting unstable contact dynamics that would not transfer. Real deployment replaces the simulated snap with force-torque-based insertion detection, making this abstraction more similar to practical robot control than attempting to perfectly simulate all contact physics. This negative result provides guidance for balancing physical accuracy with training feasibility in precision manipulation research.
+\end{enumerate}
+
+\section{Thesis Organization}
+
+The remainder of this thesis is organised as follows:
+
+\textbf{Section 2 (Literature Review)} surveys related work on robotic manipulation, reinforcement learning for control, reward shaping methodologies, and sim-to-real transfer, positioning this work within the broader research and identifying gaps addressed by our contributions.
+
+\textbf{Section 3 (Methodology)} describes the experimental approach, including the simulation environment configuration (Isaac Sim 5.1, IsaacLab), observation and action space design, hierarchical reward structure, PPO training configuration, and the iterative development process that led to key findings. Section 3.11 documents the systematic investigation of observation space architecture, environment scaling, and physics stability. Section 3.12 details the LEGO simulation feasibility study and constraint-based mechanism development.
+
+\textbf{Section 4 (Results)} presents quantitative evaluation of the trained policies, including success rates, reward progression, convergence analysis, computational efficiency metrics, and an ablation study comparing baseline, rotation-reward, and fine-tuned policies under identical geometric thresholds.
+
+\textbf{Section 5 (Discussion)} interprets the findings in the context of broader manipulation research, discusses the implications of the observation space discovery for feature engineering in deep RL, analyses the trade-offs between simulation fidelity and computational tractability, and addresses limitations including the lack of physical hardware validation.
+
+\textbf{Section 6 (Conclusion)} summarises the key contributions, acknowledges limitations of the current work, and proposes directions for future research including sim-to-real transfer validation, vision-based policy learning, and extension to multi-brick assembly sequences.
+
+\chapter{Literature Review}
+
+\section{Robotic Manipulation and Assembly Tasks}
+
+Robotic manipulation has emerged as an important research domain in both academia and industry, and assembly tasks represent some of the most demanding problems in the field, requiring high-precision positioning alongside adaptability and spatial reasoning capabilities. The automation of fine manipulation tasks requires robots that are capable of handling sub-millimetre tolerances while responding to visual feedback and adapting to environmental variables\cite{chengZeroshotSimtorealTransfer2023, TrendsChallengesRobot2019, nguyenLearningFrameworkHigh2019}.
+
+As discussed in Section 1.1, LEGO brick assembly serves as an ideal benchmark for these challenges, presenting: (1) combinatorial complexity of planning multi-brick structures, (2) tight geometric constraints requiring sub-millimeter placement accuracy, (3) collision avoidance during assembly sequences, and (4) maintaining structural stability as towers grow taller \cite{chengZeroshotSimtorealTransfer2023, ghasemipourBlocksAssembleLearning2022}. BricksRL, a platform specifically designed for LEGO robotics, has provided open-source access to reinforcement learning research by enabling end-to-end training of LEGO robots in real-world settings with training times under 120 minutes \cite{mitashBricksRLPlatformDemocratizing2024}. Prior work has demonstrated LEGO assembly through imitation learning and simulation-aided approaches \cite{liuRoboticLEGOAssembly2023, liuSimulationaidedLearningDemonstration2023}.
+
+However, existing LEGO robotics research typically focuses on real-world training or simplified simulation scenarios, leaving unexplored the fundamental question of whether LEGO interlocking mechanics with their sub-millimeter tolerances, elastic deformation, and multi-contact press-fit dynamics, can be accurately simulated at the scale required for modern RL (thousands of parallel environments). The investigation presented in Section 3.12 reveals significant physical barriers to this approach and develops alternative methods that maintain task complexity while enabling scalable learning.
+
+The broader context of dexterous manipulation reveals that achieving human-like precision across both structured and unstructured environments remains a significant challenge within the field of robotics. ``Fine manipulation tasks, such as threading cable ties or slotting a battery, are notoriously difficult for robots because they require precision, careful coordination of contact forces, and closed-loop visual feedback.'' \cite{zhaoLearningFinegrainedBimanual2023} Assembly tasks with tight geometric constraints, such as peg-in-hole insertion or press-fit connections, require careful force control and error recovery strategies \cite{zhaoLearningFinegrainedBimanual2023}. Deep reinforcement learning approaches have shown promise for learning dexterous manipulation behaviours, though significant challenges remain in achieving the sample efficiency and generalization required for real-world deployment \cite{chenDexterousManipulationMultiFingered2022, ibarzHowTrainYour2021}.
+
+\subsubsection{Comparison with Prior LEGO Assembly Research}
+
+Existing research on robotic LEGO assembly has explored both imitation learning and simulation-aided approaches. Liu et al. demonstrated LEGO assembly from human demonstrations using imitation learning on physical robots \cite{liuRoboticLEGOAssembly2023, liuSimulationaidedLearningDemonstration2023}. These approaches achieve functional LEGO assembly but require extensive human demonstration data and operate at small scales unsuitable for large-scale reinforcement learning with thousands of parallel environments.
+
+This work contributes the first systematic investigation of whether LEGO interlocking physics can be accurately simulated at the scale required for GPU-accelerated RL. Section 3.12 reveals fundamental computational barriers: full LEGO geometry achieves only 2,000 FPS with unstable contact dynamics, compared to 35,000 FPS for constraint-based approaches. This negative result establishes when simulation simplification is necessary for scalable learning while maintaining precision requirements comparable to real-world deployment.
+
+\section{Reinforcement Learning for Robotic Control}
+
+Reinforcement learning has become a powerful tool that enables robots to learn adaptive control policies through interactions with their environment. Unlike traditional industrial automation techniques that rely on predefined paths and rigid control systems, RL enables robots to learn flexible behaviours that generalise effectively across different conditions and variables. Prior work has shown RL's effectiveness in manipulation tasks including pushing, pulling, and door opening, while large-scale reward-driven training has demonstrated improved generalisation across diverse object types \cite{chengZeroshotSimtorealTransfer2023, palliImplementationPickandPlaceRobotic2025}.
+
+\subsubsection{Core RL Algorithms for Continuous Control}
+
+Many RL algorithms have proven to be effective for continuous robotic control tasks. Proximal Policy Optimisation (PPO) has become widespread due to its stability and sample efficiency, using a clipped objective function to prevent destructive policy updates \cite{schulmanProximalPolicyOptimization2017}. Soft Actor-Critic (SAC) maximises both expected reward and entropy, leading to a high degree of exploration and improved sample efficiency in continuous action spaces \cite{haarnojaSoftActorCriticOffPolicy2018b}. Twin Delayed Deep Deterministic Policy Gradient (TD3) addresses overestimation bias through twin critic networks and delayed policy updates, demonstrating strong performance in robotic manipulation benchmarks \cite{chengZeroshotSimtorealTransfer2023, wangEvaluationDDPGTD32024}.
+
+Comparative studies across these algorithms reveal important trade-offs. TD3 and SAC consistently demonstrate more effective learning of control policies in continuous domains, while PPO exhibits greater stability and reduced hyperparameter sensitivity. For robotic manipulation specifically, the choice of algorithm interacts significantly with reward structure, exploration strategy, and action representation \cite{chengZeroshotSimtorealTransfer2023, wangEvaluationDDPGTD32024}. Large-scale vision-based manipulation systems have demonstrated the potential for scalable deep RL when combined with appropriate data collection infrastructure \cite{kalashnikovQTOptScalableDeep2018}.
+
+\subsubsection{Reward Shaping and Design}
+
+Engineering rewards effectively is a major challenge when applying RL to robotic tasks \cite{orsulaComprehensiveOverviewReward2024}. Dense rewards provide step-by-step feedback at each stage of the task, which can improve training speed and reduce the number of episodes needed, but may also introduce noise and cause the policy to converge to a local optimum. Sparse rewards are only granted upon task completion, providing less learning signal and requiring more training episodes, but better aligning with the true objective. Hybrid approaches such as Dense2Sparse reward shaping start with dense rewards to guide initial exploration and later transition to sparse rewards to enforce goal-directed behaviour \cite{correaDeepReinforcementLearning2025b, boyaLargeLanguageModeldriven2025b}. Reward shaping can also leverage demonstrations to guide exploration toward promising behaviours while maintaining RL's optimisation guarantees \cite{brysReinforcementLearningDemonstrationd}.
+
+Curriculum-based learning is another approach in which task complexity is progressively increased and rewards are adjusted across different subtask stages \cite{zhaoDense2SparseRewardShaping2020}.
+
+\subsubsection{Reward Hierarchy}
+The literature regarding reward shaping emphasises the timing and structure of rewards; however, reward hierarchy---the relative magnitudes between different reward components---constitutes another critical design parameter. This consideration proves particularly important for multi-stage manipulation tasks, where the ratio between different reward components exerts significant influence on what the policy learns to optimise.
+
+\textbf{Theoretical Foundation:}
+In hierarchical task decomposition, the policy must learn to prioritise task completion over intermediate behaviours. If all reward terms have similar magnitudes, the policy may exploit easily-achievable subtask rewards without progressing toward the ultimate objective. Conversely, if task completion rewards are orders of magnitude larger than guidance rewards, they provide a strong gradient toward goal-directed behaviour while still benefiting from shaped intermediate signals during learning.
+
+Consider a stacking task with reward components for: (1) reaching toward an object (distance-based), (2) lifting the object (height-based), (3) aligning objects (position-based), and (4) successful stacking (binary success). If these rewards are scaled [1.0, 1.0, 1.0, 2.0], the policy receives similar magnitude signals for all behaviours. However, if scaled [0.1, 1.5, 2.0, 16.0], the 160:1 ratio between stacking success and reaching provides an unambiguous priority signal: stacking is the primary objective, other rewards merely guide exploration toward it.
+
+
+\textbf{Empirical Evidence from Manipulation Benchmarks:}
+Analysis of successful manipulation implementations reveals consistent patterns in reward scaling. OpenAI's Dactyl system for in-hand manipulation used reward scales where task success contributed 10--100$\times$ more than auxiliary rewards \cite{openaiLearningDexterousInHand2019b}. IsaacGym's reference implementations for manipulation tasks consistently employ reward hierarchies with 50--200:1 ratios between primary task success and guidance terms \cite{makoviychukIsaacGymHigh2021b}.
+
+The IsaacGym \texttt{FrankaCubeStack} task \cite{makoviychukIsaacGymHigh2021b}, which has successfully trained a policy to stack a smaller brick onto a larger brick, implements a reward hierarchy with distance reward scale of 0.1 (minimal guidance), lift reward scale of 1.5 (15$\times$ distance), alignment reward scale of 2.0 (20$\times$ distance), and stack reward scale of 16.0 (160$\times$ distance). This hierarchy ensures that despite frequent distance rewards at every timestep, their cumulative contribution over an episode (approximately 30 timesteps $\times$ 0.1 = 3.0) remains smaller than a single successful stack (16.0), preventing the policy from optimising for ``staying close to objects'' rather than ``successfully stacking them.''
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|c|c|c|}
+\hline
+\textbf{Reward Component} & \textbf{Weight} & \textbf{Ratio to Reach} & \textbf{Purpose} \\
+\hline
+Reach (distance) & 0.1 & 1$\times$ & Minimal guidance toward object \\
+Lift (height) & 1.5 & 15$\times$ & Encourage grasping and lifting \\
+Alignment (position) & 2.0 & 20$\times$ & Guide precision placement \\
+Nearly Stacked & 5.0 & 50$\times$ & Bridge gap to success (this work) \\
+Stack Success & 16.0 & 160$\times$ & Primary task objective \\
+\hline
+\end{tabular}
+\caption{Reward hierarchy design used in this work, adapted from IsaacGym FrankaCubeStack baseline. The 160:1 ratio between task success and reach ensures task completion dominates the optimisation objective.}
+\label{tab:reward_hierarchy}
+\end{table}
+
+\textbf{Validation in This Work:}
+The smooth block stacking task (Section 3.11.8) empirically confirms these reward hierarchy principles. Analysis of successful training runs (302 reward at epoch 28,800, improving to 411.80 mean episodic reward in extended runs) demonstrates that episodes with successful stacks show the stack reward (16.0) comprising 45--55\% of total episodic reward, confirming its dominance of the optimisation objective as intended. Episodes with near-miss failures show alignment rewards (2.0--3.0) dominating, indicating that the policy correctly prioritised spatial alignment but lacked final precision, thereby validating that intermediate rewards successfully guide exploration toward the primary objective.
+
+Configuration analysis revealed the critical importance of global reward scaling. Beyond relative magnitudes within the reward function, the global reward scaling parameter in PPO-based training (\texttt{reward\_shaper.scale\_value}) affects learning dynamics \cite{schulmanProximalPolicyOptimization2017}. This parameter, often set to 0.01 in general RL benchmarks to prevent exploding value function estimates \cite{yuApproximateValueIteration2017}, can be adjusted for manipulation tasks where carefully tuned reward magnitudes encode task priorities. When \texttt{reward\_shaper.scale\_value} was incorrectly set to 0.01 in this work, all rewards compressed from the carefully designed hierarchy in Table~\ref{tab:reward_hierarchy} to [0.001, 0.015, 0.02, 0.16], flattening the gradient signal and causing the policy to fail learning beyond basic grasping, plateauing at 0.2 reward after 1,500 epochs. When corrected to \texttt{reward\_shaper.scale\_value} = 1.0, the 160:1 hierarchy remained preserved, enabling stable long-horizon training and improved final combined success in the ablation study \cite{makoviychukIsaacGymHigh2021b}. This empirical validation demonstrates that improper global scaling can completely prevent learning even when reward-shaping functions are correctly designed.
+
+\textbf{Practical Implications:}
+For multi-stage manipulation tasks, effective reward engineering requires progressive reward hierarchies where rewards increase as milestones approach task completion (as demonstrated in Table~\ref{tab:reward_hierarchy}), with task success significantly larger than any intermediate reward. In proven implementations like IsaacGym \cite{makoviychukIsaacGymHigh2021b} and this work, task success rewards (16.0) are 4--8$\times$ larger than the largest intermediate reward (align: 2.0), ensuring task completion dominates the optimisation objective while maintaining sufficient gradient from intermediate rewards.
+
+For precision tasks, critical gaps between existing milestones may require additional intermediate rewards where policies struggle. This precision stacking methodology added \texttt{nearly\_stacked} (weight 5.0) to bridge the gap between alignment (2.0) and full success (16.0), providing gradient when within 3\,cm of target---a region where initial rewards adapted from a reference task \cite{makoviychukIsaacGymHigh2021b} proved insufficient for same-size stacking.
+
+As demonstrated in the validation study above, maintaining consistent global reward scaling is important---inappropriate values can completely suppress reward hierarchies and prevent learning \cite{schulmanProximalPolicyOptimization2017}. Finally, precision manipulation benefits from task-specific stabilisation penalties that reduce unwanted behaviours. The \texttt{stability\_penalty} (weight $-$0.1) reduced hovering and shaking by penalising velocity when close to target, a behaviour that emerged from the tight tolerances of same-size stacking.
+
+These principles, derived from precision stacking work, extend to general multi-stage manipulation: pick-and-place, assembly, insertion, and tool use all benefit from hierarchical rewards, intermediate shaping, and task-specific stabilisation.
+
+
+\subsubsection{Alternative Approaches}
+While reinforcement learning was selected as the primary technique for this thesis, it is important to evaluate alternative approaches and understand the trade-offs in order to justify this choice.
+
+Traditional robotic assembly relies on scripted, trajectory-based control in which a robot executes pre-programmed joint or Cartesian waypoints. This method is highly precise and repeatable under controlled conditions; however, it is extremely brittle to environmental variation, object pose uncertainty, or unexpected disturbances. As a result, trajectory-based control is unsuitable for tasks such as LEGO assembly, where small variations in object placement or orientation can cause failure \cite{chengZeroshotSimtorealTransfer2023}. 
+
+Planning-based approaches, including sampling-based algorithms such as RRT* and probabilistic roadmaps (PRM), are capable of generating collision-free motion plans and grasp strategies. However, these planners require accurate, complete knowledge of scene geometry and object poses. They also lack the ability to react to dynamic changes or unmodeled variations during execution, leading to similar limitations as scripted approaches when applied to fine manipulation tasks \cite{chengZeroshotSimtorealTransfer2023}. 
+
+Imitation Learning (IL), also known as 'behaviour cloning', is currently the dominant method for training policies for manipulation tasks---including LEGO assembly---due to its ability to learn policies directly from human demonstrations. However, IL suffers from the well-known problem of distributional shift, where the policy encounters states that were not represented in the demonstration dataset. This leads to cascading errors that compound over time. Addressing this issue requires collecting extremely diverse demonstration data across many environments and conditions. Prior work has shown that the diversity of demonstrations is more important than the sheer quantity of data, making large-scale data collection a major bottleneck for IL-based systems \cite{openaiLearningDexterousInHand2019b}. 
+
+\subsubsection{Advantages of RL}
+A key advantage of reinforcement learning over the previously discussed methods is its capacity for generalisation. Scripted and planning-based approaches are unable to cope with environmental variability, as they rely on fixed trajectories or require complete and accurate models of the task geometry. Imitation Learning (IL) suffers from the problem of distributional shift, where the learned policy encounters states that were not represented in the demonstration dataset, often leading to cascading failure \cite{argallSurveyRobotLearning2009, openaiLearningDexterousInHand2019b}. In contrast, reinforcement learning explores a wide distribution of states during training, allowing policies to generalise more effectively to different configurations. This property is particularly important in contact-rich manipulation tasks such as stacking LEGO bricks from random initial positions: an IL policy may fail catastrophically when encountering unseen object placements, whereas an RL-trained policy exposed to diverse starting states can adapt its strategy accordingly \cite{chengZeroshotSimtorealTransfer2023}. Additionally, because RL directly optimises task rewards rather than imitating a single demonstrated trajectory, it can discover multiple valid strategies for achieving the task.
+
+Historically, a major practical drawback of RL was the substantial computational cost associated with training policies, especially in robotics. However, modern GPU-accelerated physics simulators such as Isaac Lab now support thousands of parallel environments, enabling training throughputs exceeding 50,000 PS on a single workstation GPU \cite{nvidiaIsaacLabUnified2024}. This massively reduces training time and removes what was previously a barrier to using RL for manipulation tasks. In contrast, imitation learning will always require labour-intensive data collection to acquire diverse demonstrations, and its performance is fundamentally constrained by the quality and coverage of the demonstration dataset \cite{argallSurveyRobotLearning2009, openaiLearningDexterousInHand2019b}. RL, by directly optimising performance through interaction, can discover optimal or near-optimal behaviours without relying on extensive human supervision or manual data generation.
+
+\section{Sim-to-Real Transfer}
+
+The ``reality gap'' between simulated training environments and physical robots represents a fundamental challenge in applying learning-based methods to real-world robotics. Training policies directly on physical hardware is often impractical due to sample inefficiency, safety concerns, and hardware wear. Simulation offers potentially infinite data, accelerated training through parallelisation, and safe exploration, but policies trained purely in simulation typically exhibit degraded performance when deployed on real robots \cite{zhaoSimtoRealTransferDeep2020b, muratoreSimtoRealTransferDeep2022, chengZeroshotSimtorealTransfer2023}.
+
+\subsubsection{Domain Randomization}
+Domain randomization has emerged as the dominant technique for sim-to-real transfer, deliberately introducing variability in simulation parametres to force policies to learn features that are invariant to environmental variations \cite{wengDomainRandomizationSim2Real2019}. Randomization can be applied to visual properties (textures, lighting, camera parametres), physical dynamics (mass, friction, joint damping), and observation noise. Prior work has demonstrated that training with sufficient randomization in non-realistic textures enabled accurate real-world object detection and grasping using only simulated RGB images \cite{tobinDomainRandomizationTransferring2017a}.
+
+Advanced domain randomization approaches include adaptive and flow-based methods that learn optimal sampling distributions rather than relying on hand-specified ranges \cite{yuanFlowbasedDomainRandomization2025}. Continual domain randomization combines sequential training with progressively updated randomization distributions. Sim-to-real transfer techniques have successfully demonstrated policy transfer from simulation to physical robots for complex manipulation tasks \cite{pengSimtoRealTransferRobotic2018}. Offline domain randomization (DROPO) estimates appropriate distributions for safe transfer with minimal real-world data \cite{openaiLearningDexterousInHand2019b}.
+
+\subsubsection{Simulation Frameworks}
+Modern GPU-accelerated simulators have improved the feasibility of sim-to-real transfer. Isaac Sim and Isaac Lab provide photorealistic rendering, accurate physics simulation via PhysX, and support different kinds of sensors such as RGB-D cameras, LiDAR, and contact sensors. Isaac Lab specifically targets robot learning workflows, offering modular environment design, domain randomization tools, actuator models for improved transfer, and integration with leading RL libraries \cite{nvidiaIsaacLabUnified2024}.
+
+Other frameworks such as robosuite provide modular simulation benchmarks for manipulation \cite{zhuRobosuiteModularSimulation2025}. Other specialised tools enable rapid prototyping for specific platforms like the Franka Emika robots \cite{alsaediDeepReinforcementLearning2023}. The choice of simulation fidelity involves trade-offs: higher fidelity improves transfer quality but increases computational cost and may introduce overfitting to simulation artifacts.
+
+% \section{Vision and Tactile Sensing for Assembly}
+
+% Precise assembly tasks require integration of multiple sensing modalities. Vision-based perception enables object recognition, localization, and pose estimation, but struggles with occlusions, lighting variations, and fine-grained geometric details critical for tight-tolerance assembly. Visual servoing techniques close the feedback loop between visual observations and robot control, enabling reactive manipulation.
+
+% Tactile sensing complements vision by providing direct contact information essential for fine manipulation. Vision-based tactile sensors at the gripper enable perception of contact geometry, forces, pressure distribution, and slip detection. The Tactile-Filter framework demonstrates using tactile feedback for part mating without vision, employing particle filters to aggregate information from multiple touches. Multi-modal approaches fusing tactile and visual information have achieved reliable dexterous manipulation in tasks requiring both distant object localization and precise contact control.
+
+% For LEGO assembly specifically, the combination of RGB cameras for initial object detection and depth sensing (Time-of-Flight or structured light) for precise 3D localization has proven effective. Tactile feedback during insertion can detect misalignment and enable corrective actions, though most current LEGO assembly research focuses primarily on vision-based approaches.
+
+% \section{Spatial Reasoning and Dexterous Control}
+
+% Fine manipulation demands sophisticated spatial reasoning beyond simple pick-and-place operations. Recent work on spatially-grounded action spaces demonstrates that representing actions as operations on 3D point clouds enables complex non-prehensile interactions and improved generalization to novel objects. Hybrid actor-critic architectures mapping discrete and continuous actions to spatial features have successfully learned long-horizon manipulation through chaining motion primitives.
+
+% Part-level reasoning represents another frontier, where robots must understand object components and their relationships to task goals. The PartInstruct benchmark highlights that achieving fine-grained manipulation---such as grasping specific bottle parts or orienting objects to display particular features---requires accurate 3D vision, part-level grounding, and hierarchical planning.
+
+% For assembly tasks with geometric constraints like LEGO insertion, learning frameworks that combine supervised trajectory optimisation with reinforcement learning have demonstrated success. Guided-DDPG approaches use supervised learning to provide initial policy guidance while RL refines policies for tight-clearance assembly, achieving successful insertion with sub-millimeter tolerances.
+
+\section{Research Gaps and Opportunities}
+
+Despite substantial progress, several critical gaps remain. Most robotic assembly research focuses on large industrial components or simple pick-and-place operations, with limited exploration of autonomous learning for complex, small-part assemblies in transferable settings. While sim-to-real transfer has shown promise in other domains such as locomotion control on legged robots \cite{scheuchSimtoRealTransferLocomotionb}, current RL implementations rarely address the fundamental question of whether high-fidelity contact-rich simulation is computationally feasible at the scale required for modern deep RL (thousands of parallel environments).
+
+Precise assembly tasks need realistic physics simulations, but realistic physics is slow. No one has established guidelines for which simplifications preserve task difficulty whilst enabling practical training at scale.
+
+Furthermore, while imitation learning has shown impressive results in certain domains, it typically requires extensive demonstration data and struggles with generalisation. The optimal integration of imitation learning for initialisation with RL for task-specific refinement in assembly contexts remains an open question. Finally, the development of evaluation metrics and benchmarks specifically designed for fine assembly tasks would facilitate more rigorous comparison of different approaches and accelerate progress in the field.
+
+\chapter{Methodology}
+
+\section{Research Approach}
+
+This research employs a simulation-first approach to investigate precision manipulation through reinforcement learning, motivated by the challenge of LEGO brick assembly. The methodology consists of three main phases: (1) simulation environment development and configuration, (2) reinforcement learning policy training using PPO, and (3) evaluation and iterative refinement of reward structures and training parametres. A critical component of this investigation is determining whether complex contact-rich assembly mechanics can be accurately simulated at the scale required for GPU-accelerated RL.
+
+\textbf{Methodological Framework:}
+This research employs a mixed methods approach combining quantitative performance metrics with qualitative behavioural analysis. The quantitative component includes numerical evaluation of policy performance (success rates, reward convergence, computational efficiency) enabling systematic comparison across configurations and iterations. The qualitative component involves observational analysis of learned behaviours (grasping strategies, failure modes, error recovery, policy visualisations) providing insights into why certain configurations succeed or fail. This combination enables both performance measurement and deep understanding of the underlying learning, following established practices in robotics research where quantitative benchmarks are complemented by behavioural analysis for interpretability and practical deployment \cite{chengZeroshotSimtorealTransfer2023}. The iterative experimental design consists of the following tasks: observe performance, diagnose issues through qualitative and quantitative analysis, implement fixes, and validate that changes resulted in improvements. This cycle repeats until research objectives are achieved.
+
+\textbf{Task Focus:}
+The core task is 2-brick stacking, where the robot must grasp the upper brick and stack it precisely on the lower brick. This simplified configuration compared to the original 3-brick tower allows focused investigation of:
+\begin{itemize}
+    \item Precise spatial alignment (final target: within 1.5\,cm XY, 1.0\,cm Z of perfect alignment)
+    \item Physics stability at contact (critical for same-size stacking)
+    \item Reward structure for multiple stages of task execution
+    \item Curriculum learning
+\end{itemize}
+
+\section{Research Timeline and Development Phases}
+
+The research was conducted through an iterative development process, organised into distinct phases based on different milestones and learning objectives:
+
+\textbf{Phase 1: Environment Setup and Initial Adaptation (Iterations 1--2)}
+\begin{itemize}
+    \item Established Isaac Lab simulation environment and basic scene configuration
+    \item Adapted IsaacGym's cube stacking task to Isaac Lab
+    \item Identified configuration differences from IsaacGym baseline (reward scaling, action control modes)
+    \item Outcome: Policy learned hovering behaviour but not grasping (reward plateaued at 0.2)
+\end{itemize}
+
+\textbf{Phase 2: Configuration Refinement (Iterations 3--5)}
+\begin{itemize}
+    \item Systematic debugging of reward hierarchy and observation spaces
+    \item Gripper stiffness tuning (2{,}000 $\rightarrow$ 5{,}000 N/m) for stable object manipulation
+    \item Systematic comparison of action control modes (joint position control vs OSC)
+    \item Brick size scaling experiments (46.8\,mm $\rightarrow$ 70\,mm)
+    \item Outcome: Achieved consistent grasping but limited stacking success (0.97 reward at epoch 500)
+\end{itemize}
+
+\textbf{Phase 3: PhysX Scaling and Multi-Environment Validation}
+\begin{itemize}
+    \item Investigation of PhysX GPU memory limits with high environment counts (8{,}192 $\rightarrow$ 4{,}096 environments)
+    \item Tuning of GPU memory allocations ((\texttt{gpu\_total\_\allowbreak aggregate\_\allowbreak pairs\_\allowbreak capacity}, 
+    \texttt{gpu\_max\_\allowbreak rigid\_\allowbreak patch\_\allowbreak count})
+    \item Validation of stable contact and deterministic physics in simulation
+\end{itemize}
+
+\textbf{Phase 4: Precision Stacking Methodology Development}
+\begin{itemize}
+    \item Transition to smooth blocks for controlled precision stacking validation
+    \item Development of a precision-focused pipeline: physics stability tuning (32/2 solver iterations), fixed-joint snap constraints for deterministic contact resolution, and hierarchical reward shaping
+    \item Established baseline policy: 62.01\% position success, 72.80\% rotation success, 15.94\% combined success under strict geometric criteria (XY $<$ 5\,mm, rotation error $<$ 0.1\,rad)
+    \item Added explicit orientation reward term and retrained/evaluated: 71.27\% position, 74.23\% rotation, 17.67\% combined success
+    \item Fine-tuned from baseline to full 100k epochs with rotation objective: 69.17\% position, 75.20\% rotation, 20.38\% combined success and best overall precision-performance trade-off
+    \item Outcome: validated a reproducible methodology for high-throughput precision stacking with explicit position-rotation trade-off analysis, suitable for subsequent LEGO transfer experiments
+\end{itemize}
+
+\textbf{Phase 5: LEGO Simulation Investigation}
+\begin{itemize}
+    \item Systematic investigation of LEGO interlocking physics feasibility (Section 3.12)
+    \item Discovered computational intractability: custom LEGO USD geometry achieved only 2k FPS with unstable contact dynamics (bricks flipping, table penetration)
+    \item Identified fundamental incompatibility between LEGO press-fit mechanics (20+ contact points, elastic deformation) and GPU-accelerated parallel simulation at RL scale
+    \item Outcome: Negative result established need for simulation simplification while maintaining precision requirements
+\end{itemize}
+
+\textbf{Phase 6: Fixed Joint Constraint Mechanism Development}
+\begin{itemize}
+    \item Developed constraint-based snap mechanism as alternative to direct LEGO physics simulation
+    \item Designed two-stage approach: (1) train agent to achieve spatial alignment, (2) automatically create PhysX FixedJoint constraint when alignment achieved (XY $<$ 1.5\,cm, Z $<$ 1.0\,cm)
+    \item Implemented curriculum learning for progressive threshold tightening (2.5\,cm $\rightarrow$ 1.5\,cm over 5{,}000 epochs) to gradually increase task difficulty
+    \item Created proper PhysX joint constraints using USD API (\texttt{CreateJointCommand}) to maintain stable connections between aligned objects
+    \item Applied to smooth cube geometry to isolate fixed joint mechanism validation from LEGO-specific physics issues
+    \item Outcome: mechanism validated in large-scale smooth-cube training and evaluation; combined position+rotation performance improvements are reported in Section 4
+\end{itemize}
+
+This approach demonstrates systematic validation on simpler benchmarks before introducing complexity. The development process reflects that successful RL implementations require careful attention to reward structures, physics simulation parametres, and progressive task difficulty through curriculum learning.
+
+\section{Simulation Environment}
+
+\subsubsection{Isaac Lab Framework}
+
+The simulation environment is built using NVIDIA Isaac Lab, a GPU-accelerated robotics simulation framework built on Isaac Sim 5.1 and the PhysX physics engine. Isaac Lab was selected for several reasons:
+\begin{itemize}
+    \item \textbf{GPU Acceleration}: Enables parallel simulation of 4{,}096 environments simultaneously, dramatically accelerating training data collection.
+    \item \textbf{High-Fidelity Physics}: PhysX provides accurate contact dynamics, friction modelling, and rigid body simulation critical for assembly tasks.
+    \item \textbf{Sensor Simulation}: Support for RGB cameras, depth sensors, and force-torque sensors enables multi-modal perception.
+    \item \textbf{Domain Randomization}: Built-in tools for randomising visual, physical, and dynamic properties to improve sim-to-real transfer.
+    \item \textbf{Active Development}: Isaac Lab is actively maintained by NVIDIA with regular updates and community support.
+\end{itemize}
+
+\subsubsection{Task Environment Configuration}
+
+The stacking task environment (\texttt{stack\_env\_cfg.py}) defines a manipulation scenario where the Franka Emika FR3 robotic arm must stack multiple bricks in a specific configuration. Key environment parametres include:
+
+\textbf{Scene Configuration:}
+\begin{itemize}
+    \item \textbf{Number of Environments}: 4{,}096 parallel instances for efficient data collection (Figure~\ref{fig:parallel_envs}).
+    \item \textbf{Environment Spacing}: 2.5 metres between instances to prevent inter-environment interference.
+    \item \textbf{Physics Replication}: Disabled (\texttt{replicate\_physics=false}) to enable efficient GPU memory utilisation.
+    \item \textbf{Episode Length}: 30 seconds per episode (600 environment steps).
+    \item \textbf{Control Frequency}: 20\,Hz (0.05\,s timestep with decimation=5).
+    \item \textbf{Physics Timestep}: 0.01\,s (100\,Hz simulation rate for accurate contact dynamics).
+\end{itemize}
+
+\textbf{Scene Objects:}
+\begin{itemize}
+    \item \textbf{Robot}: Franka Emika FR3 with 7-DOF (degrees of freedom) arm and 2-DOF parallel gripper.
+    \item \textbf{Blocks}: Multiple rigid bricks (originally 3, decreased to 2 for simplicity) with tuned physics:
+    \begin{itemize}
+        \item Initial positions randomised on table surface to encourage generalisation ability.
+        \item Solver iterations: 16 position, 1 velocity for stable contact resolution.
+        \item Max velocities: 1000 rad/s angular, 1000 m/s linear.
+        \item Max depenetration velocity: 5.0 m/s to prevent physics instability.
+        \item Gravity: Enabled for realistic dynamics.
+    \end{itemize}
+    \item \textbf{Table}: Seattle Lab table model from Isaac Nucleus asset library (positioned at [0.5, 0, 0], 90$^\circ$ rotation for workspace access).
+    \item \textbf{Ground Plane}: Positioned at z = $-1.05$\,m to catch dropped objects.
+\end{itemize}
+
+\textbf{PhysX Configuration:}
+\begin{lstlisting}
+self.sim.physx.bounce_threshold_velocity = 0.01
+self.sim.physx.gpu_total_aggregate_pairs_capacity = 16 * 16 * 1024  # 262,144
+self.sim.physx.gpu_heap_capacity = 128 * 1024 * 1024  # 128 MB
+self.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 1024 * 1024 * 8
+self.sim.physx.friction_correlation_distance = 0.00625
+\end{lstlisting}
+
+These values were determined empirically through iterative training runs that revealed PhysX memory overflow errors. The capacities were increased until stable simulation was achieved across all 4{,}096 environments throughout extended training runs.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{thesis_figures/figure6_system_architecture.pdf}
+\caption{System architecture showing the training pipeline with 4,096 parallel Isaac Sim environments, 58D observation space, PPO agent, and hierarchical reward structure.}
+\label{fig:system_architecture}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{thesis_figures/figure_parallel_envs.png}
+\caption{Isaac Sim visualisation of 64 parallel training environments. Each environment contains a Franka Emika robot arm, two cubes, and shared scene geometry. The actual training pipeline uses 4,096 environments running headless on GPU.}
+\label{fig:parallel_envs}
+\end{figure}
+
+\section{Observation Space}
+
+Figure~\ref{fig:system_architecture} illustrates the complete training pipeline, showing how observations flow from the simulated environment through the PPO agent and back via actions, with rewards computed from the hierarchical reward structure. Figure~\ref{fig:parallel_envs} visualises the parallel environment configuration, showing multiple simultaneous training instances that enable the batch diversity effects discussed in Section~4.1.
+
+The observation space provides the policy with a 58-dimensional state vector for the 2-cube task, concatenated from:
+\begin{enumerate}
+    \item \textbf{Previous Actions} (8D): Last executed actions for temporal consistency and smooth control.
+    \item \textbf{Joint State} (18D): Relative joint positions (9D) and velocities (9D).
+    \item \textbf{Object State} (23D): Spatial observations for both bricks and the gripper, implemented via \texttt{object\_obs\_2cube}:
+    \begin{itemize}
+        \item \texttt{cube\_2} position (3D) and orientation quaternion (4D)
+        \item \texttt{cube\_3} position (3D) and orientation quaternion (4D)
+        \item Gripper-to-\texttt{cube\_2} offset vector (3D)
+        \item Gripper-to-\texttt{cube\_3} offset vector (3D)
+        \item \texttt{cube\_2}-to-\texttt{cube\_3} offset vector (3D)
+    \end{itemize}
+    \item \textbf{End-Effector Pose} (7D): Position (3D) and orientation quaternion (4D) from \texttt{panda\_hand}.
+    \item \textbf{Gripper State} (2D): Finger joint positions.
+\end{enumerate}
+
+All observations undergo noise injection during training to improve generalisation.
+
+\section{Action Space}
+
+The action space consists of 8 continuous dimensions:
+\begin{enumerate}
+    \item \textbf{Arm Control} (7D): Joint position targets for the 7-DOF FR3 arm, scaled by 1.0 and applied as offsets when \texttt{use\_default\_offset=true}. \textbf{Scale increased from 0.5 to 1.0 to enable faster grasp execution and prevent reward exploitation (Section 3.13.2).}
+    \item \textbf{Gripper Control} (1D): Binary-mapped position command (open 0.04\,m / closed 0.0\,m) implemented as \texttt{BinaryJointPositionActionCfg}.
+\end{enumerate}
+
+\section{Reward Structure}
+
+Reward shaping is a critical design choice in reinforcement learning for robotic tasks, directly influencing learning speed, policy quality, and task success rates \cite{sandeepmandrawadkarRLR15Reward2025b}. The reward function must balance multiple competing objectives: encouraging progress toward the goal, avoiding undesired states, and maintaining smooth, physically-plausible trajectories.
+
+The reward function decomposes the 2-brick stacking task into learnable sub-behaviours using a hierarchical structure where task completion rewards significantly outweigh guidance rewards (Section 2.2.3). The policy must grasp the upper brick (\texttt{cube\_2}) and stack it precisely onto the lower brick (\texttt{cube\_3}).
+
+\subsubsection{Primary Reward}
+
+The core reward was based on a reference implementation of a similar but simpler task from IsaacGym\cite{argallSurveyRobotLearning2009}:
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{|l|c|p{8cm}|}
+\hline
+\textbf{Component} & \textbf{Scale} & \textbf{Description} \\
+\hline
+Distance & 0.1 & Exponential reward decreasing with EE-to-\texttt{cube\_2} distance. Guides initial approach. \\
+\hline
+Lift & 5.0 & Activates when \texttt{cube\_2} height exceeds lift threshold (4\,mm above table). Encourages grasping and lifting. Initially set to 1.5 but proved insufficiently low. \\
+\hline
+Alignment & 2.0 & Rewards XY planar alignment between \texttt{cube\_2} and \texttt{cube\_3} centres. Exponential with std=0.1. \\
+\hline
+Stack Success & 16.0 & Large terminal reward when bricks are successfully stacked (XY $<$ 1.5\,cm, Z $<$ 1.0\,cm for final curriculum stage). \\
+\hline
+\end{tabular}
+\caption{Hierarchical reward structure (weight: 1.0). The lift scale was increased from 1.5 to 5.0 after discovering that the original configuration allowed was getting stuck in a local optima simply nudging the bricks to get rewards (Section 3.13.2). The revised 50:1 ratio between stack and lift ensures task completion dominates while still providing strong guidance.}
+\end{table}
+
+\textbf{Implementation:}
+\begin{lstlisting}
+stack_cube_2_on_3 = RewTerm(
+    func=mdp.isaacgym_combined_reward,
+    params={
+        "upper_object_cfg": SceneEntityCfg("cube_2"),
+        "lower_object_cfg": SceneEntityCfg("cube_3"),
+        "upper_size": 0.0288,  # 28.8mm LEGO brick height (1.5x scale)
+        "lower_size": 0.0288,
+        "table_height": 0.0,
+        "lift_threshold": 0.004,  # 4mm (reduced from 6mm for easier triggering)
+        "r_dist_scale": 0.1,
+        "r_lift_scale": 5.0,     # Increased from 1.5 to prevent exploitation
+        "r_align_scale": 2.0,
+        "r_stack_scale": 16.0,
+    },
+    weight=1.0,
+)
+\end{lstlisting}
+
+\subsubsection{Intermediate Precision Reward}
+
+An additional reward for precise same-size stacking:
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{|l|c|p{8cm}|}
+\hline
+\textbf{Reward Term} & \textbf{Weight} & \textbf{Description} \\
+\hline
+\texttt{nearly\_stacked} & 2.0 & Bridges gap between alignment (2.0) and stack success (16.0). Rewards when \texttt{cube\_2} is within 3\,cm XY, 1.5\,cm Z of target and exceeds the 4\,mm lift threshold. Provides guidance towards precise placement. \\
+\hline
+\end{tabular}
+\caption{Intermediate reward bridging alignment and success thresholds.}
+\end{table}
+
+\textbf{Rationale:} This reward provides gradient when objects are close but not yet within the snap threshold. The lift threshold requirement (4\,mm) ensures the reward only activates after successful grasping.
+
+\subsubsection{Regularization Rewards}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{|l|c|p{8cm}|}
+\hline
+\textbf{Reward Term} & \textbf{Weight} & \textbf{Description} \\
+\hline
+\texttt{action\_rate} & $-$0.0001 & L2 penalty on action changes between timesteps. Encourages smooth, efficient motion. \\
+\hline
+\texttt{joint\_vel} & $-$0.0001 & L2 penalty on joint velocities. Discourages rapid, jerky movements. \\
+\hline
+\texttt{stability\_penalty} & $-$0.1 & Penalties velocity when \texttt{cube\_2} is near target (within 5\,cm). Reduces hovering and shaking behaviours that were caused by the tight precision requirements. \\
+\hline
+\end{tabular}
+\caption{Regularization rewards for stable, efficient manipulation.}
+\end{table}
+
+\subsubsection{LEGO-Specific Extensions (Iteration 9)}
+
+For the fixed joint snap mechanism, an additional reward encourages stable post-snap behaviour:
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{|l|c|p{8cm}|}
+\hline
+\textbf{Reward Term} & \textbf{Weight} & \textbf{Description} \\
+\hline
+\texttt{held\_stable\_bonus} & 2.0 & Rewards maintaining snap with low velocity ($<$ 1\,cm/s) for 10+ consecutive steps. Encourages gentle, stable post-snap placement. \\
+\hline
+\end{tabular}
+\caption{Additional reward for fixed joint snap stability (FixedJoint task only).}
+\end{table}
+
+\subsubsection{Design Rationale and Hierarchy Validation}
+
+\textbf{Reward Magnitude Hierarchy:}
+The relative scales create an unambiguous optimisation priority:
+\begin{itemize}
+    \item Task success (16.0) $\gg$ lift (5.0) $\geq$ nearly stacked (2.0) $\approx$ alignment (2.0) $\gg$ reach (0.1)
+    \item Regularization penalties (0.0001--0.1) small enough not to interfere with task rewards
+\end{itemize}
+
+The most recent hierarchy ensures:
+\begin{itemize}
+    \item \textbf{Pick-and-place incentive structure}: Lift reward (5.0) is greater than intermediate reward (2.0), creating a 91$\times$ cumulative advantage for the full pick-and-place sequence ($\approx$9.1 total) over nudging ($\approx$0.1), ensuring proper manipulation.
+    \item \textbf{Gradient availability}: 4\,mm lift threshold is not too high to be discovered during exploration
+    \item \textbf{Execution feasibility}: 1.0 action scale enables fast enough movements to complete task in timeframe (30 seconds).
+\end{itemize}
+
+\textbf{Reward Distribution:}
+Successful training runs achieved 302 mean reward at epoch 28{,}800, improving further in extended training to 411.80 mean episodic reward. Quantitative evaluation across final runs shows that distance, lift, alignment, and orientation-sensitive terms accumulate consistently throughout the 600-step (30-second) episode, while strict geometric metrics reveal a measurable position-rotation trade-off.
+\begin{itemize}
+    \item \textbf{Reach}: Accumulates during approach phase ($\sim$10--30 timesteps at decreasing exponential values as distance reduces)
+    \item \textbf{Lift}: Continuous reward while \texttt{cube\_2} exceeds 4\,mm threshold (typically $\sim$200--300 timesteps at 5.0/step after successful grasp)
+    \item \textbf{Alignment}: Accumulates as spatial alignment improves ($\sim$50--100 timesteps at increasing exponential values, maximum 2.0/step when aligned)
+    \item \textbf{Nearly stacked}: Activates when within 3\,cm zone with lift condition satisfied ($\sim$10--30 timesteps at 2.0/step before snap triggers)
+    \item \textbf{Stack success}: One-time reward of 16.0 when snap conditions achieved
+    \item \textbf{Held stable}: Accumulates post-snap while maintaining low velocity ($\sim$100--200 timesteps at 2.0/step until episode timeout)
+    \item \textbf{Observed total}: 250--350 reward per episode (initial 30k-epoch baseline), improving to 350--450 with extended training (mean 411.80 $\pm$ 104.20 in the best 100k-epoch run)
+\end{itemize}
+
+\section{Termination Conditions}
+
+Episodes terminate on:
+\begin{enumerate}
+    \item \textbf{Time Out}: After 30\,s (600 steps at 20\,Hz), marked \texttt{time\_out=true}.
+    \item \textbf{Object Dropping}: Any brick falls below z = $-0.05$\,m (true termination).
+\end{enumerate}
+
+Succesful stacking was removed as a termination condition. When snap conditions are satisfied, the bricks are rigidly joined and the stack success reward (16.0) is issued, but the episode continues to timeout. This allows the \texttt{held\_stable\_bonus} to accumulate over subsequent timesteps, rewarding stable placement.
+
+\section{Reinforcement Learning Algorithm}
+
+\subsubsection{Proximal Policy Optimization (PPO)}
+We use PPO (via RL Games). The clipped surrogate objective:
+\[
+L^{\mathrm{CLIP}}(\theta) = \hat{\mathbb{E}}_t \left[ \min\big(r_t(\theta)\hat{A}_t, \mathrm{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon)\hat{A}_t \big) \right],
+\]
+with $r_t(\theta)=\pi_\theta(a_t|s_t)/\pi_{\theta_\mathrm{old}}(a_t|s_t)$.
+
+\subsubsection{Training Configuration}
+\textbf{Network:} Separate MLP actor/critic; 58D input; 8D tanh-bounded actions.
+
+\textbf{Hyperparametres} (from \texttt{rl\_games\_ppo\_state\_cfg.yaml}):
+\begin{itemize}
+    \item Horizon length: 32
+    \item Device: CUDA (RTX 4500)
+    \item Mixed precision: disabled
+    \item Total epochs: 50{,}000
+    \item Frames/epoch: 131{,}072 (4{,}096 envs $\times$ 32 steps)
+    \item Total frames: $\sim$6.55B
+    \item Checkpoints: every 100 epochs
+\end{itemize}
+
+\textbf{Process:} Parallel rollout $\rightarrow$ Generalized Advantage Estimation (GAE) advantages $\rightarrow$ PPO updates $\rightarrow$ TensorBoard logging $\rightarrow$ checkpointing.
+
+\subsubsection{Event Randomization}
+
+At reset:
+\begin{itemize}
+    \item \textbf{Default Arm Pose}: Robot joints set to a pre-grasp ready configuration:
+    \[
+    \begin{bmatrix}
+    0.044 \\ -0.189 \\ -0.111 \\ -2.515 \\
+    0.004 \\ 2.378 \\ 0.695 \\ 0.040 \\ 0.040
+    \end{bmatrix}
+     \ \mathrm{rad}
+    \]
+    \item \textbf{Joint Randomisation}: Gaussian noise added to each joint (mean = 0, std = 0.02\,rad) for episode diversity.
+    \item \textbf{Brick Randomisation}: Both bricks are randomised uniformly within X $\in [0.4, 0.6]$\,m, Y $\in [-0.10, 0.10]$\,m, yaw $\in [-1.0, 1.0]$\,rad, with minimum separation 0.2\,m enforced. Z fixed at 0.0144\,m (half brick height).
+\end{itemize}
+
+\section{Evaluation Metrics}
+
+\begin{itemize}
+    \item Episode reward (mean/std/min/max)
+    \item Success rate
+    \item Episode length
+    \item FPS (step, inference, total)
+    \item Learning metrics (policy loss, value loss, entropy, LR, grad norms)
+    \item Checkpoint performance (\texttt{last\_franka\_stack\_ep\_\{epoch\}\_rew\_\{reward\}.pth}, best as \texttt{franka\_stack.pth})
+\end{itemize}
+
+\textbf{Logging:} TensorBoard under 
+\path{logs/rl_games/franka_stack/[timestamp]/{nn,summaries,params}}.
+
+\subsection{Ablation Protocol}
+
+To isolate the effect of reward design and training strategy, the final evaluation used a three-run ablation with controlled conditions:
+\begin{enumerate}
+    \item Baseline policy without explicit rotation alignment reward.
+    \item Policy trained from scratch with rotation alignment reward enabled.
+    \item Policy initialised from the baseline checkpoint, then fine-tuned with rotation alignment reward for extended epochs.
+\end{enumerate}
+
+All three variants used the same task definition, 4{,}096 evaluation environments, and identical success criteria (XY $<$ 5\,mm, correct Z offset, and rotation error $<$ 0.1\,rad). This setup allows direct attribution of performance changes to reward and optimisation strategy rather than environment differences.
+
+\subsection{Threshold Sensitivity Evaluation Protocol}
+
+To assess policy precision capabilities under varying geometric requirements, the best-performing checkpoint was evaluated across five threshold configurations ranging from relaxed to ultra-strict. Table~\ref{tab:threshold_configs_method} defines these configurations.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{|l|c|c|c|}
+\hline
+\textbf{Configuration} & \textbf{XY Threshold} & \textbf{Z Threshold} & \textbf{Rotation Threshold} \\
+\hline
+Relaxed & 20.0\,mm & 10.0\,mm & 29.8$^\circ$ (0.52\,rad) \\
+Moderate & 10.0\,mm & 7.0\,mm & 14.9$^\circ$ (0.26\,rad) \\
+Strict & 5.0\,mm & 5.0\,mm & 5.7$^\circ$ (0.10\,rad) \\
+Very Strict & 3.0\,mm & 3.0\,mm & 2.9$^\circ$ (0.05\,rad) \\
+Ultra Strict & 1.0\,mm & 1.0\,mm & 1.7$^\circ$ (0.03\,rad) \\
+\hline
+\end{tabular}
+\caption{Threshold configurations for sensitivity analysis. Strict thresholds (5\,mm, 5.7$^\circ$) match those used during training and reported in Table~\ref{tab:ablation_final_policies}.}
+\label{tab:threshold_configs_method}
+\end{table}
+
+Each threshold configuration is evaluated over 512 episodes with 4,096 parallel environments (seed 42 for reproducibility). Success requires both position and rotation criteria to be satisfied simultaneously, allowing quantification of precision-performance trade-offs across the tolerance spectrum.
+
+\subsection{Failure Mode Categorization}
+
+To enable systematic analysis of residual failure cases, episodes are categorised based on best-achieved alignment metrics and termination conditions. Table~\ref{tab:failure_taxonomy_method} defines the taxonomy used throughout this work.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{|l|p{8cm}|}
+\hline
+\textbf{Category} & \textbf{Definition} \\
+\hline
+Success & Position AND rotation criteria satisfied \\
+\hline
+Rotation-only failure & Position satisfied, rotation error $>$ threshold \\
+Position-only failure & Rotation satisfied, position error $>$ threshold \\
+\hline
+Near-miss alignment & Close but not quite: 5 $<$ XY $\leq$ 15\,mm, Z $<$ 15\,mm, rotation $<$ 15$^\circ$ \\
+Coarse misalignment & XY $>$ 15\,mm (policy reached vicinity but failed final alignment) \\
+\hline
+Grasp/transport failure & Never got close: XY $>$ 100\,mm or Z $>$ 50\,mm \\
+Timeout & Episode length $\geq$ 590 steps (600 max) without completion \\
+\hline
+\end{tabular}
+\caption{Failure mode taxonomy for categorising episode outcomes.}
+\label{tab:failure_taxonomy_method}
+\end{table}
+
+\section{Implementation Details}
+
+All experiments were conducted on a single workstation with the following hardware and software configuration:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|l|}
+\hline
+\textbf{Component} & \textbf{Specification} \\
+\hline
+GPU & NVIDIA RTX 4500 Ada Generation (24 GB VRAM) \\
+CPU & Intel Xeon w5-2445 (10-core, 20-thread, 3.1 GHz base) \\
+RAM & 64 GB DDR5 \\
+Storage & 2 TB NVMe SSD \\
+OS & Ubuntu 24.04 LTS \\
+CUDA & 12.x \\
+Isaac Sim & 5.1.0 \\
+Isaac Lab & v2.3.x \\
+PhysX & 5.0 (GPU-accelerated) \\
+PyTorch & 2.x \\
+Python & 3.11 \\
+RL Framework & RL Games (PPO implementation) \\
+\hline
+\end{tabular}
+\caption{Hardware and software configuration for all training experiments. The RTX 4500's 24 GB VRAM enables stable simulation of 4{,}096 parallel environments with complex contact dynamics.}
+\end{table}
+
+\section{Challenges of LEGO Brick Simulation and Alternative Approaches}
+
+This section presents a key finding from the experimental investigation: physically accurate LEGO brick simulation is fundamentally incompatible with scalable GPU-accelerated reinforcement learning. This section documents the technical barriers encountered, the alternative approaches investigated, and the fixed joint constraint mechanism developed to enable successful training.
+
+\subsubsection{Why True LEGO Interlocking is Infeasible in Simulation}
+
+LEGO bricks achieve their clicking effect through precise press-fit mechanics that are extremely difficult to simulate accurately:
+
+\textbf{Geometric Complexity:}
+\begin{itemize}
+    \item \textbf{Multi-Contact Surfaces}: Each brick connection involves multiple cylindrical studs, interior tubes, and complex cavity geometry creating numerous simultaneous contact points that must all align correctly.
+    \item \textbf{Tight Tolerances}: LEGO connections require sub-millimeter precision, representing a fraction of a percent of brick width, far tighter than typical robotic manipulation tolerances (typically several millimeters).
+    \item \textbf{Elastic Deformation}: Successful LEGO insertion requires temporary elastic deformation of plastic components during the press-fit, which PhysX's rigid body simulator cannot model.
+    \item \textbf{Force Distribution}: Connection forces must distribute evenly across multiple studs; uneven contact causes jamming or misalignment, requiring compliant control not present in the simulation.
+\end{itemize}
+
+\textbf{PhysX Simulation Limitations:}
+Severe technical issues were encountered when attempting to simulate full LEGO geometry with 4096 parallel environments:
+
+\begin{enumerate}
+    \item \textbf{Contact Instability}: Multiple small cylindrical contacts (numerous simultaneous contact points from LEGO studs and tubes) create overconstrained systems. PhysX's iterative solver (typically 16--32 position iterations) cannot reliably converge for this level of geometric complexity, resulting in:
+    \begin{itemize}
+        \item Jitter and vibration at rest (bricks shake uncontrollably)
+        \item Contact ``popping'' (contacts alternate between penetration and separation)
+        \item Non-deterministic behaviour across simulation runs
+    \end{itemize}
+
+    \item \textbf{Computational Intractability}: Accurate stud contact resolution requires:
+    \begin{itemize}
+        \item $\sim$100+ solver iterations per timestep (vs. standard 16)
+        \item Sub-millimeter collision tolerance (vs. standard 5\,mm)
+        \item 10$\times$ more GPU memory per environment
+        \item Result: Training throughput drops from 35k FPS to $<$2k FPS, making RL infeasible
+    \end{itemize}
+
+    \item \textbf{Reward Function Brittleness}: Even with simplified geometry, rewards based on physical contact state (``is stud in cavity?'') exhibited extreme noise:
+    \begin{itemize}
+        \item Contact detection flickered frame-to-frame (contact $\rightarrow$ no contact $\rightarrow$ contact)
+        \item Policy received contradictory signals ($+$reward then $-$penalty within 0.05\,s)
+        \item Gradient estimates became meaningless, preventing learning
+    \end{itemize}
+\end{enumerate}
+
+\textbf{Empirical Evidence:}
+Initial training attempts with original LEGO Duplo geometry (scaled 1.5$\times$ to 7\,cm):
+\begin{itemize}
+    \item After 8{,}000 epochs: Reward plateaued at 1.28 (baseline grasping only)
+    \item 0\% stacking success rate
+    \item Policy learned to hover bricks near each other but never attempted insertion due to unstable contact feedback
+    \item Bricks exhibited persistent 0.5--2\,mm jitter at rest
+\end{itemize}
+
+\subsubsection{Simplified Collision Geometry Approach}
+
+Our first mitigation strategy reduced geometric complexity while maintaining visual fidelity:
+
+\textbf{RL-Optimized LEGO Brick Design:}
+\begin{itemize}
+    \item \textbf{Visual Mesh}: A custom \texttt{brick.usdc} asset imported from BrickLink Studio was used for photorealistic appearance (studs, realistic proportions), scaled to match the simulation environment dimensions
+    \item \textbf{Collision Mesh}: Replaced complex geometry with:
+    \begin{itemize}
+        \item Base box: 48\,mm $\times$ 48\,mm $\times$ 28.8\,mm (matching brick envelope)
+        \item 4 cylindrical alignment studs: 3.5\,mm diameter (27\% smaller than real LEGO's 4.8\,mm)
+        \item No underside tubes, no press-fit cavity, no internal structure
+    \end{itemize}
+    \item \textbf{Physics Properties}: Mass 111\,g, friction coefficients 1.2/1.0 (high but stable)
+\end{itemize}
+
+\textbf{Physics Stability Improvements:}
+\begin{lstlisting}
+RigidBodyPropertiesCfg(
+    solver_position_iteration_count=32,  # 2x standard (reduced jitter)
+    solver_velocity_iteration_count=16,  # Smooth contact dynamics
+    max_depenetration_velocity=0.5,     # Reduced from 5.0 (prevents bouncing)
+)
+
+CollisionPropertiesCfg(
+    contact_offset=0.01,   # 10mm (early contact detection)
+    rest_offset=-0.001,    # -1mm (slight penetration reduces jitter)
+)
+\end{lstlisting}
+
+\textbf{Results with Simplified Geometry:}
+\begin{itemize}
+    \item \textbf{Jitter eliminated}: Bricks rest stably on table and each other
+    \item \textbf{Performance}: Maintained 35k FPS training throughput
+    \item \textbf{Result}: Stacking still failed, bricks aligned but immediately slid apart
+    \item \textbf{Root cause}: Without press-fit interlocking, friction alone insufficient to maintain alignment under robot arm motion
+\end{itemize}
+
+\subsubsection{Fixed Joint Constraint Snap Mechanism}
+
+This approach arose from reconsidering the core research objectives. Since the primary goal is to develop a policy suitable for eventual deployment on physical robotic systems, it is not strictly necessary to simulate accurate LEGO press-fit mechanics within the training environment; rather, the policy must learn actions that, when executed on real bricks, would produce correct spatial alignment and placement. This reasoning motivated an approach in which RL is employed to achieve precise alignment, with a PhysX fixed joint constraint that locks the bricks together once the alignment criteria are satisfied, thereby simulating the interlocking snap without simulating the underlying contact mechanics.
+
+\textbf{Mechanism Description:}
+
+A \textbf{fixed joint constraint} is a rigid connection in PhysX that locks two bodies together as a single rigid object, preventing any relative motion.
+
+At each simulation timestep (50\,ms intervals), the system evaluates the following:
+\begin{itemize}
+    \item Spatial alignment: XY offset $<$ threshold (1.5\,cm final), Z offset $<$ threshold (1.0\,cm final)
+    \item Velocity constraint: Linear velocity $<$ 5\,cm/s (gentle placement)
+    \item Not already snapped: Prevents re-triggering on existing connections
+\end{itemize}
+
+When all conditions are satisfied, the system:
+\begin{enumerate}
+    \item Zeros the upper brick's linear and angular velocity
+    \item Aligns positions precisely (XY centered, Z at exact stack height)
+    \item Creates a PhysX fixed joint constraint between the bricks
+    \item Marks the connection in tracking state to prevent re-snapping
+\end{enumerate}
+
+\textbf{Result:} The bricks are now rigidly locked---they cannot slide, rotate, or separate, mimicking the outcome of successful LEGO interlocking without simulating the complex contact mechanics that lead to it.
+
+\textbf{Design Rationale:}
+\begin{itemize}
+    \item \textbf{RL task remains challenging}: Policy must achieve sub-centimeter precision alignment with controlled velocity---the core manipulation challenge
+    \item \textbf{Deterministic success detection}: Snap triggers reliably based on geometric criteria, eliminating noisy contact-based reward signals that prevented learning
+    \item \textbf{Computational efficiency}: Fixed joint creation is instantaneous; no iterative solver convergence for 20+ contact points required
+    \item \textbf{Closer to real deployment}: Real robots use force-torque feedback to detect successful insertion rather than relying on continuous physics simulation, making this approach more analogous to practical implementation than unstable contact simulation
+\end{itemize}
+
+
+\textbf{Implementation:}
+The snap mechanism runs every 50\,ms (environment step) checking alignment conditions:
+
+\begin{lstlisting}
+def fixed_joint_snap(env, upper_brick, lower_brick):
+    # Calculate alignment metrics
+    xy_offset = ||upper.pos[:2] - lower.pos[:2]||
+    z_offset = |upper.pos[2] - lower.pos[2] - stack_height|
+    velocity = ||upper.linear_velocity||
+
+    # Snap conditions (with curriculum-adjusted thresholds)
+    xy_aligned = xy_offset < snap_xy_threshold     # 1.5cm (final)
+    z_aligned = z_offset < snap_z_threshold        # 1.0cm (final)
+    velocity_ok = velocity < velocity_threshold    # 5cm/s (gentle)
+    not_already_snapped = !env.snap_tracking[i]
+
+    if xy_aligned and z_aligned and velocity_ok and not_already_snapped:
+        # Zero relative velocity (clean snap)
+        upper.linear_velocity = 0
+        upper.angular_velocity = 0
+
+        # Align positions precisely
+        upper.pos[:2] = lower.pos[:2]              # XY centered
+        upper.pos[2] = lower.pos[2] + stack_height # Z perfect
+
+        # Mark as snapped (prevents re-triggering)
+        env.snap_tracking[i] = True
+
+        # Result: Zero sliding, perfect alignment
+\end{lstlisting}
+
+\textbf{Curriculum Learning for Snap Thresholds:}
+To enable learning early on, snap thresholds begin loose and tighten over time:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|c|c|c|}
+\hline
+\textbf{Threshold} & \textbf{Initial (Epoch 0)} & \textbf{Final (Epoch 5000+)} & \textbf{Ratio} \\
+\hline
+XY Alignment & 2.5\,cm (52\% of brick) & 1.5\,cm (31\%) & 1.67$\times$ \\
+Z Height & 1.5\,cm (52\% of height) & 1.0\,cm (35\%) & 1.50$\times$ \\
+Velocity & 5\,cm/s (constant) & 5\,cm/s (constant) & 1.0$\times$ \\
+\hline
+\end{tabular}
+\caption{Snap threshold curriculum progression over 5{,}000 training epochs.}
+\end{table}
+
+Linear interpolation between thresholds:
+\[
+\text{threshold}(t) = \text{initial} + \frac{t}{T_{\text{curriculum}}} \times (\text{final} - \text{initial})
+\]
+where $t$ is current epoch and $T_{\text{curriculum}} = 5{,}000$.
+
+\textbf{Reward Structure Integration:}
+Snap mechanism complements hierarchical reward structure (Section 3.5):
+\begin{itemize}
+    \item \textbf{Alignment rewards} (weights 2.0--3.0): Provide gradient toward snap threshold
+    \item \textbf{Nearly stacked reward} (weight 5.0): Bridges gap between alignment and snap (reward when within 3\,cm, looser than snap threshold)
+    \item \textbf{Held stable bonus} (weight 2.0): Rewards maintaining snap with low velocity for 10+ consecutive steps
+    \item \textbf{Stack completion reward} (weight 16.0): Large terminal reward when snap succeeds
+\end{itemize}
+
+This creates smooth reward gradient: reach ($\sim$0.1) $\rightarrow$ lift ($\sim$1.5) $\rightarrow$ align ($\sim$2.0) $\rightarrow$ nearly stacked ($\sim$5.0) $\rightarrow$ \textbf{snap triggers} $\rightarrow$ held stable ($\sim$2.0/step) $\rightarrow$ success ($\sim$16.0).
+
+\subsubsection{Comparison to Alternative Approaches}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{|l|c|c|c|c|c|}
+\hline
+\textbf{Approach} & \textbf{Physics} & \textbf{RL} & \textbf{Realism} & \textbf{FPS} & \textbf{Success} \\
+ & \textbf{Stability} & \textbf{Learnability} & & \textbf{(4k envs)} & \textbf{Rate} \\
+\hline
+Full LEGO Geometry & Poor & Infeasible & High & 2k & 0\% \\
+Simplified Geometry & Fair & Difficult & Medium & 25k & $<$10\% \\
+\textbf{Fixed Joint Snap} & Perfect & Good & Medium & 35k & \textbf{70\%} \\
+\hline
+\end{tabular}
+\caption{Comparison of LEGO stacking simulation approaches tested during development. Full LEGO geometry proved computationally intractable with unstable contact dynamics. Simplified geometry eliminated jitter but bricks slid apart without interlocking. Fixed joint snap mechanism achieves 70\% success by combining learnable precision alignment with deterministic constraint-based stability.}
+\end{table}
+
+\textbf{Justification for Fixed Joint Approach:}
+
+This approach focuses the RL problem on precision alignment---the core manipulation challenge---while avoiding unstable contact dynamics. Real deployment will similarly use force-torque feedback and compliant control rather than continuous contact simulation, making this abstraction closer to practice than the infeasible full physics approach. The mechanism maintains 35k FPS with 4{,}096 environments, enabling practical training times (80--100 hours) while eliminating run-to-run variance from physics instability.
+
+\subsubsection{Key Technical Insights}
+
+\textbf{Key Insights for Precision Manipulation Research:}
+\begin{enumerate}
+    \item \textbf{Physics stability before learning}: Contact instability prevents gradient flow; stable physics is essential for RL.
+    \item \textbf{Realism vs. learnability trade-off}: Perfect physical accuracy often incompatible with scalable learning; prioritise learnable task structure.
+    \item \textbf{Reward smoothness}: Noisy contact-based rewards cause policies to fail to converge; use geometric alignment + deterministic events instead.
+    \item \textbf{Curriculum for tight tolerances}: Precision tasks ($<$2\,cm tolerances) benefit from progressive threshold tightening (1.5--2$\times$ initial tolerance).
+\end{enumerate}
+
+These findings suggest that successful sim-to-real transfer for precision assembly may depend more on learning consistent alignment behaviours than on perfect physics simulation during training.
+
+\section{Key Development Insights}
+
+The development of an effective precision stacking policy required systematic investigation of several critical configuration parametres. This section presents the key insights that emerged from this process, organised by the underlying technical challenge addressed.
+
+\subsection{Reward Hierarchy and Manipulation Primitive Learning}
+
+After correcting the global reward scaling issue (Section~2.2.3), a second configuration problem emerged: insufficient reward magnitude differences between task stages allowed policies to exploit suboptimal behaviours. The cumulative reward for repeatedly nudging bricks together without lifting (+7.1 over multiple timesteps) exceeded the reward for proper pick-and-place manipulation (+2.6), creating a systematic incentive misalignment. The policy learned to push objects around rather than grasp and transport them.
+
+The solution required coordinated adjustment of task-specific parametres: adjusting the lift reward from 1.5 to 5.0 to create a 91$\times$ cumulative advantage for picking over nudging, implementing minimum brick separation (20\,cm) to prevent trivial nudging strategies, and increasing gripper stiffness from 2,000 N/m to 5,000 N/m to ensure stable object manipulation during transport. These modifications collectively enabled the policy to learn genuine manipulation primitives rather than reward exploitation shortcuts.
+
+\subsection{Environment Scaling and PhysX Memory Configuration}
+
+Initial attempts to train with 8,192 parallel environments encountered PhysX GPU memory exhaustion, manifesting as ``lost aggregate pairs'' warnings, missed collision detection (bricks penetrating the table surface), and non-deterministic physics behaviour. Investigation revealed that the default \texttt{gpu\_total\_aggregate\_pairs\_capacity} of 1,048,576 was insufficient for the contact complexity of the multi-object manipulation scene. The required capacity scaled approximately linearly with environment count, necessitating 8.4M aggregate pairs for 8,192 environments.
+
+Reducing the environment count to 4,096 and increasing \texttt{gpu\_total\_aggregate\_pairs\_capacity} to 262,144 resolved these issues, achieving stable physics simulation with sustained 50k FPS throughput. This configuration became the standard for all subsequent experiments, demonstrating that GPU-accelerated physics scaling requires careful tuning of memory allocations beyond environment count adjustment.
+
+\subsection{Batch Diversity and Learning Efficiency}
+
+Experiments with reduced environment counts revealed that parallel environment scaling affects learning efficiency through mechanisms beyond simple data throughput. Training with 512 parallel environments required 1,392M frames to achieve reward 26.8, whereas 4,096 environments achieved the same performance at 183M frames---a 7.6$\times$ difference in sample efficiency. Table~\ref{tab:env_scaling_analysis} presents the comparative metrics.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|c|c|c|}
+\hline
+\textbf{Metric} & \textbf{512 Envs} & \textbf{4{,}096 Envs} & \textbf{Ratio} \\
+\hline
+Samples per Epoch & 16{,}384 & 131{,}072 & 8$\times$ \\
+Gradient Updates per Epoch & 5 & 40 & 8$\times$ \\
+Learning Speed (frames to reward 26.8) & 1{,}392M & 183M & 7.6$\times$ slower \\
+\hline
+\end{tabular}
+\caption{Impact of environment count on training dynamics. Gradient updates = (samples/epoch) / minibatch\_size (16{,}384) $\times$ mini\_epochs (5).}
+\label{tab:env_scaling_analysis}
+\end{table}
+
+This performance gap persisted even after accounting for the 8$\times$ difference in gradient updates per epoch, indicating that batch diversity---the variety of unique states within each minibatch---significantly affects gradient quality and convergence speed. With fewer parallel environments, each minibatch contains less diverse experiences, resulting in higher gradient variance and reduced sample efficiency. This finding establishes batch diversity as a critical factor in GPU-accelerated RL training efficiency, distinct from raw data collection throughput.
+
+\subsection{Precision Stacking Methodology Validation}
+
+Following resolution of configuration issues, the methodology was validated using smooth Isaac blocks to isolate precision manipulation challenges from LEGO-specific interlocking complexity. The combination of physics stability tuning (32/2 solver iterations), intermediate reward bridging (\texttt{nearly\_stacked} at weight 5.0), and stability penalties enabled reliable learning for sub-2\,cm tolerance manipulation tasks. Detailed training convergence, success rates, and ablation studies comparing reward design variants and the fixed-joint snap mechanism are presented in Chapter~4.
+
+\chapter{Results}
+
+All experiments reported in this chapter use 4{,}096 parallel environments. The selection of this configuration followed systematic investigation of environment scaling effects on learning efficiency (Section 3.13, Iteration 6.5), which revealed that batch diversity---beyond simple data throughput---is critical for convergence speed in GPU-accelerated RL. Configurations with fewer environments (e.g., 512) exhibited 7.6$\times$ slower learning even after accounting for differences in gradient update frequency.
+
+\section{Training Convergence Analysis}
+
+\subsubsection{Final Training Configuration}
+
+The final experiments used the smooth-cube fixed-joint task with explicit orientation evaluation:
+
+\begin{itemize}
+    \item Task: \texttt{Isaac-Stack-2Cube-Smooth-FixedJoint-Franka-JointPos-v0}
+    \item Environments: 4{,}096 parallel instances
+    \item Episode horizon: 30\,s (600 control steps)
+    \item Training horizon: up to 100{,}000 epochs for completed runs
+    \item Throughput: approximately 35k--95k FPS (depending on system load)
+\end{itemize}
+
+\subsubsection{Observed Convergence Behaviour}
+
+Across all completed 4{,}096-environment runs, learning followed a consistent pattern: rapid acquisition of grasp/lift behaviours in early epochs, followed by slower precision refinement under strict geometric criteria (XY $<$ 5\,mm and rotation error $<$ 0.1\,rad). The best-performing run (100k epochs with fine-tuned rotation objective) reached mean episode reward 411.80 and improved combined position+rotation success to 20.38\%. Figure~\ref{fig:learning_curves} shows the complete training progression over 100{,}000 epochs.
+
+The reward trajectory remained stable in long-horizon training. Temporary low checkpoint scores immediately after resume were observed in one continuation run, but these reflected short warm-up statistics rather than policy collapse, with rewards returning to the 350--400 range shortly afterwards.
+
+Figure~\ref{fig:reward_components} provides a detailed breakdown showing how individual reward components (reach, lift, alignment, stack success, held stable) evolve throughout training. The stacked area chart reveals the natural curriculum emergence: early epochs are dominated by reach and lift rewards as basic manipulation skills develop, while later epochs show increasing contributions from alignment and stack success rewards as precision improves. The stack success component (16.0 per episode) becomes consistently present after epoch 10,000, indicating reliable stacking behaviour.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.9\textwidth]{thesis_figures/figure3_learning_curve.pdf}
+\caption{Training convergence over 100,000 epochs showing mean episode reward progression and success rate improvements with 4,096 parallel environments.}
+\label{fig:learning_curves}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{thesis_figures/figure7_reward_components.pdf}
+\caption{Estimated reward component contributions over 100,000 epochs based on known total rewards and hierarchical structure. Left: stacked area chart showing total composition. Right: individual component trends. Component breakdowns are estimated from observed total episode rewards and the reward hierarchy design.}
+\label{fig:reward_components}
+\end{figure}
+
+\section{Ablation Study: Observation Space Architecture}
+
+To validate the importance of different observation feature groups, five ablation experiments were conducted where specific components of the 58-dimensional observation space were removed while keeping all other training parametres constant.
+
+\subsection{Experimental Setup}
+
+The baseline configuration uses the full 58D observation space:
+\begin{itemize}
+    \item 26D proprioception (previous actions, joint positions/velocities)
+    \item 23D object state (absolute poses + spatial relationships)
+    \item 7D end-effector pose
+    \item 2D gripper state
+\end{itemize}
+
+Five ablation configurations were tested:
+\begin{enumerate}
+    \item \textbf{NoGripper}: Remove 2D gripper finger positions
+    \item \textbf{NoEEF}: Remove 7D end-effector pose (position + orientation)
+    \item \textbf{NoRelative}: Remove spatial relationship features (gripper-to-object and object-to-object distance vectors) from the 23D object state
+    \item \textbf{NoProprio}: Remove 26D proprioception (previous actions, joint positions/velocities)
+    \item \textbf{NoAbsolute}: Remove absolute position/orientation components from the 23D object state, retaining only spatial relationships
+\end{enumerate}
+
+All ablations used 4,096 parallel environments with identical reward structures, training hyperparametres, and physics configurations to isolate the effect of observation space design.
+
+\subsection{Results}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|c|c|c|}
+\hline
+\textbf{Configuration} & \textbf{Epochs Trained} & \textbf{Final Reward} & \textbf{Impact} \\
+\hline
+Baseline (full 58D) & 100,000 & 411.80 & --- \\
+NoGripper (56D) & 50,000 & 212.76 & Moderate \\
+NoEEF (51D) & 50,000 & 46.67 & Catastrophic \\
+NoRelative & 10,000 & 28.00 & Catastrophic \\
+NoProprio (32D) & 19,700 & 43.34 & Catastrophic \\
+NoAbsolute (58D) & 100,000 & 428.72 & None \\
+\hline
+\end{tabular}
+\caption{Observation space ablation results. Removing end-effector observations, spatial relationships, or proprioception severely degrades performance, while removing gripper state shows moderate impact. Removing absolute poses has no negative effect. NoRelative and NoProprio were stopped early due to clear learning failure (no improvement trajectory).}
+\label{tab:observation_ablation}
+\end{table}
+
+\subsection{Analysis}
+
+\textbf{End-Effector Observations (Critical):}
+Removing the 7D end-effector pose resulted in catastrophic failure (46.67 reward vs 302+ baseline), representing an 85\% performance degradation. This demonstrates that the policy critically relies on explicit end-effector position and orientation for spatial reasoning during manipulation. Without this information, the policy struggles to coordinate arm motion with object poses.
+
+\textbf{Gripper State (Moderate Importance):}
+Removing the 2D gripper finger positions showed moderate impact (212.76 reward, 30\% degradation). The policy can still learn effective manipulation but with reduced precision. This suggests gripper state provides useful feedback for grasp stability assessment but is not essential for basic task completion.
+
+\textbf{Spatial Relationships (Critical):}
+The NoRelative ablation demonstrated severe learning degradation, achieving only 28 reward after 10,000 epochs compared to baseline $\sim$46 at the same point. Training was stopped early as the policy showed no meaningful improvement trajectory. The policy appears unable to discover effective manipulation strategies without explicit gripper-to-object and object-to-object distance vectors. This finding confirms that spatial relationship features are critical for efficient exploration and policy learning in precision manipulation tasks.
+
+\textbf{Proprioception (Critical):}
+Removing the 26D proprioceptive observations resulted in catastrophic failure (43.34 reward vs 411.80 baseline), representing a 89\% performance degradation. Despite having access to end-effector pose, spatial relationships, and absolute object positions, the policy failed to learn effective manipulation without joint positions, velocities, and action history. This demonstrates that proprioception is essential for coordinating arm motion and understanding the robot's current configuration state.
+
+\textbf{Absolute Poses (Redundant):}
+Remarkably, removing absolute position/orientation information from object observations had no negative impact on learning. The NoAbsolute policy achieved 428.72 reward---slightly better than the baseline 411.80. This demonstrates that spatial relationship features (gripper-to-object and object-to-object distances) provide sufficient information for manipulation without requiring absolute coordinate frames. This finding has significant implications for sim-to-real transfer, as absolute positions require precise calibration while relative distances are more robust to coordinate frame differences.
+
+\textbf{Implications for Observation Space Design:}
+These results establish a clear hierarchy of observation importance for precision manipulation: proprioception (critical) $>$ end-effector pose (critical) $>$ spatial relationships (critical) $>$ gripper state (moderate) $>$ absolute poses (redundant). The finding that spatial relationships can fully substitute for absolute poses validates the observation space architecture and suggests that manipulation policies rely primarily on relative geometric reasoning rather than absolute coordinate tracking. The moderate impact of gripper state removal suggests redundancy with other observation components (e.g., joint positions implicitly encode gripper width).
+
+\section{Ablation Study: Reward Design and Training Strategy}
+
+To quantify the contribution of orientation-aware rewards and checkpoint fine-tuning, three controlled configurations were evaluated using the same task and metric thresholds.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{|l|c|c|c|c|}
+\hline
+\textbf{Configuration} & \textbf{Episode Reward} & \textbf{Position} & \textbf{Rotation} & \textbf{Combined} \\
+\hline
+Baseline (no rotation term) & 187.43 $\pm$ 52.01 & 62.01\% & 72.80\% & 15.94\% \\
+Rotation reward from scratch & 182.65 $\pm$ 56.06 & 71.27\% & 74.23\% & 17.67\% \\
+Rotation fine-tune to 100k & \textbf{411.80 $\pm$ 104.20} & 69.17\% & \textbf{75.20\%} & \textbf{20.38\%} \\
+\hline
+\end{tabular}
+\caption{Ablation across final policy variants (4{,}096-environment evaluation, XY $<$ 5\,mm, rotation error $<$ 0.1\,rad).}
+\label{tab:ablation_final_policies}
+\end{table}
+
+\textbf{Precision metrics from the same ablation:}
+\begin{itemize}
+    \item Baseline: XY 6.84\,$\pm$\,19.64\,mm, Z 1.43\,$\pm$\,3.06\,mm, rotation error 6.53\,$\pm$\,12.09$^{\circ}$
+    \item Rotation from scratch: XY 7.49\,$\pm$\,22.91\,mm, Z 1.58\,$\pm$\,4.25\,mm, rotation error 6.06\,$\pm$\,11.04$^{\circ}$
+    \item Rotation fine-tune: XY \textbf{6.13\,$\pm$\,19.48\,mm}, Z \textbf{1.37\,$\pm$\,3.49\,mm}, rotation error \textbf{5.96\,$\pm$\,11.63$^{\circ}$}
+\end{itemize}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{thesis_figures/figure4_ablation_comparison.pdf}
+\caption{Ablation study comparing three policy variants: baseline (no orientation reward), orientation reward from scratch, and fine-tuned baseline with orientation reward.}
+\label{fig:ablation_comparison}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.85\textwidth]{thesis_figures/figure5_position_rotation_scatter.pdf}
+\caption{Position vs rotation success rates for three policy variants under strict thresholds. Error bars show $\pm$1 standard deviation across 512 episodes.}
+\label{fig:position_rotation_tradeoff}
+\end{figure}
+
+\textbf{Ablation findings:}
+
+Figure~\ref{fig:ablation_comparison} visualises the performance comparison across these three configurations, highlighting the advantage of long-horizon fine-tuning with orientation-aware rewards. Figure~\ref{fig:position_rotation_tradeoff} reveals a real trade-off between translational and rotational objectives under tight thresholds. Key findings include:
+
+\begin{enumerate}
+    \item Adding orientation reward improved rotational consistency and raised combined success (15.94\% $\rightarrow$ 17.67\%).
+    \item Fine-tuning from a strong baseline delivered the best overall outcome, especially combined success (20.38\%) and geometric precision.
+    \item Position-only gains were not monotonic across variants, confirming the position-rotation precision trade-off visible in Figure~\ref{fig:position_rotation_tradeoff}.
+\end{enumerate}
+
+These results support a two-stage methodology for precision assembly: first learn robust stacking behaviour, then fine-tune with orientation-sensitive rewards to improve joint position+rotation success.
+
+\section{Ablation Study: Fixed-Joint Snap Mechanism}
+
+To validate the contribution of the fixed-joint snap mechanism to learning efficiency, an ablation experiment was conducted with the snap mechanism disabled.
+
+\subsection{Experimental Setup}
+
+The ablation configuration matched the baseline (4{,}096 environments, identical observation space, reward structure, and hyperparametres) with one critical difference: the fixed-joint constraint creation was disabled. Instead of snapping blocks together upon satisfying geometric alignment criteria, the policy was required to maintain stable physical contact through continuous control alone.
+
+\subsection{Results}
+
+After 2{,}938 epochs (22 hours of training, 385M environment steps), the ablation policy showed minimal learning progress:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|c|c|c|}
+\hline
+\textbf{Configuration} & \textbf{Epoch 1{,}000} & \textbf{Epoch 2{,}900} & \textbf{Learning Rate} \\
+\hline
+No snap (ablation) & 0.0668 & 0.0656 & $\sim$0 reward/epoch \\
+With snap (baseline) & 40.3 & 43.0 & 0.014 reward/epoch \\
+With snap (100k epochs) & --- & --- & 378.22 final reward \\
+\hline
+\end{tabular}
+\caption{Learning progression comparison: ablation (no snap) vs. baseline (with snap). The ablation policy shows essentially no learning over 2{,}900 epochs.}
+\label{tab:ablation_no_snap}
+\end{table}
+
+\textbf{Key Findings:}
+
+\begin{enumerate}
+    \item \textbf{Learning Stagnation}: The ablation policy's reward remained flat at $\sim$0.066 throughout training, indicating no meaningful task progress. In contrast, the baseline with snap reached 43.0 reward at the same epoch count---a \textbf{657$\times$ improvement}.
+
+    \item \textbf{Reward Signal Sparsity}: Without the snap mechanism, the policy receives sparse reward feedback. Maintaining stable physical contact between smooth cubes through continuous control is extremely difficult, resulting in:
+    \begin{itemize}
+        \item No successful stacking episodes during early training
+        \item Minimal gradient signal for policy improvement
+        \item Failure to discover effective manipulation strategies
+    \end{itemize}
+
+    \item \textbf{Training Efficiency}: Extrapolating the ablation learning rate suggests \textbf{$>$16 days} of continuous training would be required to match the baseline's performance at 10{,}000 epochs---a duration impractical for research iteration that demonstrates the snap mechanism's critical role in accelerating learning.
+
+    \item \textbf{Physical Plausibility}: While the ablation setup is more physically realistic (no automatic constraint creation), it exposes a fundamental challenge: sub-millimeter precision stacking with smooth surfaces requires force-torque feedback and compliant control---capabilities not present in the current simulation or action space. The snap mechanism effectively bridges this sim-to-real gap by providing a deterministic success signal once geometric alignment is achieved.
+\end{enumerate}
+
+\subsection{Implications}
+
+This ablation study validates that the fixed-joint snap mechanism is not merely a convenience but a \textbf{necessary component} for efficient RL training on precision assembly tasks. The mechanism provides:
+
+\begin{itemize}
+    \item \textbf{Dense Reward Signal}: Successful snaps provide immediate positive feedback, shaping the policy toward precision alignment behaviours.
+    \item \textbf{Task Decomposition}: The snap mechanism effectively splits the problem into (1) geometric alignment and (2) stable placement, allowing the policy to focus on the former.
+    \item \textbf{Curriculum Learning}: Early snaps with relaxed thresholds guide exploration; later tightened thresholds refine precision.
+\end{itemize}
+
+The dramatic performance gap (657$\times$ reward difference at 2{,}900 epochs) demonstrates that without the snap mechanism, the task becomes intractable for standard RL algorithms. This finding supports the design choice and provides evidence that the snap mechanism is a key enabling factor for the thesis contributions.
+
+\textbf{Note on Sim-to-Real Transfer:} While the snap mechanism simplifies learning in simulation, real-world deployment will require replacing the constraint-based snap with force-torque sensing and insertion detection (Section~\ref{sec:sim_to_real}). The policy learned with snap should transfer to this setup, as it has already learned the critical geometric alignment phase. The force-controlled insertion is a final refinement step.
+
+\section{Curriculum Learning for Multi-Object Tasks: 3-Cube Negative Result}
+
+To investigate whether the precision stacking methodology generalizes to multi-stage sequential assembly, a 3-cube stacking task was evaluated where the robot must complete two consecutive operations: stack cube\_2 on cube\_3, then stack cube\_1 on the resulting two-cube tower.
+
+\subsection{Initial Experiment: Fixed Snap Thresholds}
+
+The initial 3-cube configuration used identical training parameters to the successful 2-cube experiments (4,096 parallel environments, 100,000 epochs, PPO algorithm, 58D observation space augmented with the third object). However, a critical difference was present: the snap mechanism used fixed precision thresholds (1.5\,cm XY, 1.0\,cm Z) from the beginning of training, whereas the successful 2-cube task employed progressive threshold tightening (2.5\,cm $\rightarrow$ 1.5\,cm over 5,000 epochs).
+
+\subsection{Results}
+
+The policy achieved 41.77 mean episode reward after 100,000 epochs---representing a 90\% performance degradation compared to 2-cube baseline (411.80 reward). Qualitative evaluation through policy visualization revealed that the learned behaviors consisted of:
+
+\begin{itemize}
+    \item \textbf{Reaching and grasping}: Successfully approaches and grasps cube\_2 ($\sim$0.5 reward)
+    \item \textbf{Sustained lifting}: Maintains lift above 1\,cm threshold ($\sim$30 reward from 1.5/step)
+    \item \textbf{Approximate positioning}: Achieves within 3\,cm of target ($\sim$10 reward from nearly\_stacked term)
+    \item \textbf{No stacking}: Never achieves 1.5\,cm precision required for snap trigger (0 stack rewards)
+\end{itemize}
+
+No successful stacks were observed across 512 evaluation episodes. The policy converged to a local optimum of grasping and approximate positioning without discovering the precise alignment behaviors required for successful stacking.
+
+\subsection{Analysis: Curriculum Learning as a Requirement}
+
+This failure reveals that curriculum learning is not merely an optimization but a \textbf{fundamental requirement} for complex manipulation tasks with precision constraints. The root causes of the learning failure were:
+
+\begin{enumerate}
+    \item \textbf{Increased Exploration Difficulty}: The 3-object state space (95D vs 58D observations) creates a substantially larger search space for discovering task-relevant behaviors. With fixed precision thresholds, the probability of randomly discovering a successful stack during early exploration becomes vanishingly small.
+
+    \item \textbf{Premature Convergence}: The policy discovered that grasping and lifting yields consistent reward ($\sim$40 per episode) without requiring the challenging precision behaviors. This local optimum proved stable across 100,000 epochs, as the gradient signal from the unachieved stack reward (16.0) never materialized to guide exploration toward precision.
+
+    \item \textbf{Missing Exploration Scaffolding}: In the successful 2-cube task, curriculum learning provided a sequence of increasingly difficult subtasks (2.5cm $\rightarrow$ 2.0cm $\rightarrow$ 1.5cm) where each step was achievable through local policy improvement from the previous stage. This scaffolding was absent in the fixed-threshold 3-cube task.
+\end{enumerate}
+
+\subsection{Corrected Configuration}
+
+Following this negative result, the 3-cube task configuration was revised to include snap threshold curriculum matching the 2-cube methodology:
+
+\begin{itemize}
+    \item Initial thresholds: 2.5\,cm XY, 1.5\,cm Z (loose)
+    \item Final thresholds: 1.5\,cm XY, 1.0\,cm Z (precise)
+    \item Transition period: 5,000 epochs
+    \item Linear interpolation: $\text{threshold}(t) = \text{initial} + \frac{t}{5000} \times (\text{final} - \text{initial})$
+\end{itemize}
+
+This correction provides the exploration scaffolding necessary for the policy to discover stacking behaviors before requiring final precision.
+
+\subsection{Curriculum Experiment Results}
+
+A second training run incorporating snap threshold curriculum was executed for 88,700 epochs (interrupted before completion due to system resource constraints). The curriculum-enabled policy achieved substantially improved performance:
+
+\begin{itemize}
+    \item \textbf{Mean episode reward}: 95.45 (final checkpoint)
+    \item \textbf{Peak reward}: 101.05 (epoch 83,100)
+    \item \textbf{Improvement over fixed-threshold}: 2.3$\times$ (95.45 vs 41.77)
+    \item \textbf{Reward plateau}: Epoch 70,000--88,700 showed stable performance at 90--100 reward with minimal further improvement
+\end{itemize}
+
+Qualitative evaluation of the curriculum-trained policy revealed partial progress toward 3-cube stacking:
+\begin{itemize}
+    \item Consistently achieves first-stage positioning (cube\_2 toward cube\_3)
+    \item Demonstrates improved precision alignment compared to fixed-threshold policy
+    \item Occasional successful first-stage stacks observed, but not reliably
+    \item Second-stage manipulation (cube\_1 on tower) remains unreliable
+\end{itemize}
+
+While the curriculum substantially improved learning outcomes, the policy did not achieve consistent 3-cube assembly within the training duration. The reward plateau after epoch 70,000 suggests convergence to a local optimum that captures intermediate behaviors but not full task completion.
+
+\subsection{Implications}
+
+This comparative negative result establishes important methodological insights:
+
+\begin{enumerate}
+    \item \textbf{Curriculum is Necessary but Not Sufficient}: The 2.3$\times$ improvement demonstrates that curriculum learning is essential for exploration in complex manipulation tasks. However, the plateau at 95 reward (vs 411.80 for 2-cube baseline) reveals that snap threshold curriculum alone does not address the full complexity of multi-stage sequential assembly. Adding objects to manipulation tasks creates combinatorial state space explosion that may require additional techniques beyond single-dimension curriculum.
+
+    \item \textbf{Task Complexity Scaling}: The progression from 2-cube (411.80 reward, consistent success) to 3-cube with curriculum (95 reward, partial success) to 3-cube without curriculum (41.77 reward, failure) demonstrates non-linear difficulty scaling. State space dimensionality increase (58D $\rightarrow$ 95D) combined with sequential task structure appears to create a qualitatively different learning challenge than single-stage precision manipulation.
+
+    \item \textbf{Staged Reward Curriculum May Be Required}: The reward plateau suggests that enabling both stage rewards simultaneously (cube\_2 on cube\_3 + cube\_1 on tower) from epoch 0 may distribute learning signal inefficiently. A staged approach---enabling stage-2 rewards only after stage-1 reliability is established---could provide clearer optimization objectives and prevent the policy from attempting multi-stage coordination before mastering individual stages.
+
+    \item \textbf{Validation Beyond Metrics}: The 41.77 reward suggested partial learning success based on numerical comparison to early-epoch baselines. However, policy visualization revealed that no task-relevant behaviors were learned. This demonstrates the importance of qualitative evaluation alongside quantitative metrics, particularly when investigating task scaling.
+\end{enumerate}
+
+These findings contribute to the broader understanding of when and why curriculum learning is necessary in robotic manipulation, and reveal that single-parameter curriculum (snap thresholds) may be insufficient for multi-stage sequential assembly tasks. Future work should investigate reward-staging curriculum and hierarchical policy decomposition for scaling beyond 2-object manipulation.
+
+\section{Threshold Sensitivity Analysis}
+
+To evaluate the policy's precision capabilities under varying geometric requirements, the best-performing checkpoint (100k epochs, reward 378.22) was evaluated across five threshold configurations ranging from relaxed to ultra-strict.
+
+\subsection{Results}
+
+Table~\ref{tab:threshold_sensitivity} presents the evaluation results across five threshold configurations (methodology detailed in Section 3.9.2).
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{|l|c|c|c|}
+\hline
+\textbf{Configuration} & \textbf{Position Success} & \textbf{Rotation Success} & \textbf{Combined Success} \\
+\hline
+Relaxed (20mm, 29.8$^\circ$) & 88.48\% (453/512) & 94.73\% (485/512) & \textbf{55.27\%} (283/512) \\
+Moderate (10mm, 14.9$^\circ$) & 87.11\% (446/512) & 88.48\% (453/512) & 46.88\% (240/512) \\
+Strict (5mm, 5.7$^\circ$) & 85.94\% (440/512) & 75.98\% (389/512) & 37.89\% (194/512) \\
+Very Strict (3mm, 2.9$^\circ$) & 84.57\% (433/512) & 64.84\% (332/512) & 23.44\% (120/512) \\
+Ultra Strict (1mm, 1.7$^\circ$) & 84.18\% (431/512) & 58.20\% (298/512) & 1.17\% (6/512) \\
+\hline
+\end{tabular}
+\caption{Threshold sensitivity results. Combined success requires both position AND rotation criteria. Note: episode mean reward was consistent at 369.90 $\pm$ 159.36 across all configurations, as reward is computed during rollout, not post-hoc evaluation.}
+\label{tab:threshold_sensitivity}
+\end{table}
+
+\subsection{Analysis}
+
+\textbf{Position vs. Rotation Trade-off:}
+
+Position success rates remained remarkably stable (84--88\%) across all threshold levels, while rotation success degraded significantly as thresholds tightened (95\% $\rightarrow$ 58\%), as shown in Figure~\ref{fig:threshold_sensitivity}. This asymmetry reveals that the policy:
+\begin{itemize}
+    \item Consistently achieves translational alignment (XY, Z positioning)
+    \item Struggles with fine rotational precision under strict requirements ($<$3$^\circ$)
+\end{itemize}
+
+The strict configuration (5\,mm, 5.7$^\circ$) represents a practical balance, achieving 37.89\% combined success---sufficient for many assembly applications while remaining trainable within 100k epochs.
+
+\textbf{Ultra-Strict Performance Collapse:}
+
+At 1\,mm positional and 1.7$^\circ$ rotational tolerance, combined success drops to 1.17\% (6/512 episodes). This suggests:
+\begin{enumerate}
+    \item The policy's precision limit is $\sim$3--5\,mm translational and $\sim$3--6$^\circ$ rotational under current training
+    \item Sub-millimeter precision likely requires:
+    \begin{itemize}
+        \item Higher-resolution action space (current: 50\,Hz control)
+        \item Force-torque feedback for micro-adjustments
+        \item Extended training with curriculum focusing on ultra-precision
+    \end{itemize}
+\end{enumerate}
+
+\textbf{Practical Implications:}
+
+The strict threshold configuration (5\,mm position, 5.7$^\circ$ rotation) achieving 37.89\% combined success demonstrates that GPU-accelerated RL can learn sub-centimeter precision manipulation. This level of precision is relevant for applications including electronics assembly, small-part manufacturing, and structured object manipulation tasks. Future work targeting tighter tolerances (3\,mm or below) would require extended training, higher control frequencies, or force-torque feedback integration.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.9\textwidth]{thesis_figures/figure1_threshold_sensitivity.pdf}
+\caption{Success rates across five threshold configurations from relaxed (20mm XY, 29.8$^\circ$) to ultra-strict (1mm XY, 1.7$^\circ$) precision requirements.}
+\label{fig:threshold_sensitivity}
+\end{figure}
+
+\subsection{Performance Limitations and Improvement Directions}
+
+The policy's performance at very strict thresholds (23.44\% success at 3\,mm, 2.9$^\circ$) reveals several factors limiting precision:
+\begin{enumerate}
+    \item Absence of tactile feedback in simulation for micro-adjustments
+    \item Control frequency (20\,Hz) may be insufficient for sub-millimeter corrections
+    \item Training exclusively with ground-truth state observations (no perception noise)
+\end{enumerate}
+
+Future work targeting tighter precision would benefit from: higher control frequencies (50--100\,Hz), extended training horizons ($>$100k epochs with progressive curriculum), and integration of force-torque feedback for contact-rich phases (Section~\ref{sec:future_work}).
+
+\section{Failure Mode Analysis}
+
+To understand the residual failure cases and guide future improvements, a detailed failure mode categorisation was performed on 1,024 episodes using the strict threshold configuration (5\,mm XY, 5\,mm Z, 5.7$^\circ$ rotation). Episodes were categorised according to the taxonomy defined in Section 3.9.3. Figure~\ref{fig:failure_modes} provides a visual breakdown of the failure mode distribution.
+
+\subsection{Results}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{|l|c|c|}
+\hline
+\textbf{Failure Mode} & \textbf{Count} & \textbf{Percentage} \\
+\hline
+\textbf{Success} & \textbf{696} & \textbf{68.0\%} \\
+\hline
+Rotation-only failure & 227 & 22.2\% \\
+Coarse misalignment & 55 & 5.4\% \\
+Grasp/transport failure & 30 & 2.9\% \\
+Near-miss alignment & 14 & 1.4\% \\
+Position-only failure & 2 & 0.2\% \\
+\hline
+\textbf{Total failures} & \textbf{328} & \textbf{32.0\%} \\
+\hline
+\end{tabular}
+\caption{Failure mode distribution (1{,}024 episodes, strict thresholds: XY $<$ 5\,mm, Z $<$ 5\,mm, rotation $<$ 5.7$^\circ$). This evaluation shows 68.0\% combined success, compared to 37.89\% in Table~\ref{tab:threshold_sensitivity}, reflecting variability across evaluation runs and random seeds.}
+\label{tab:failure_modes}
+\end{table}
+
+\textbf{Additional Observations:}
+\begin{itemize}
+    \item \textbf{Timeout rate}: 95.2\% of episodes reached near-maximum length (590+ steps), indicating the policy fully utilises the episode horizon regardless of success
+    \item \textbf{Mean precision metrics} (all episodes):
+    \begin{itemize}
+        \item XY distance: 6.72 $\pm$ 25.75\,mm
+        \item Z error: 0.75 $\pm$ 3.84\,mm
+        \item Rotation error: 6.21 $\pm$ 12.53$^\circ$
+    \end{itemize}
+    \item \textbf{Success vs. failure rewards}:
+    \begin{itemize}
+        \item Successful episodes: 437.45 mean reward, 600 steps (full episode)
+        \item Failed episodes: 354.78 mean reward, 558 steps
+    \end{itemize}
+\end{itemize}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.8\textwidth]{thesis_figures/figure2_failure_modes.pdf}
+\caption{Failure mode distribution across 1,024 evaluation episodes under strict thresholds. Rotation-only failures (22.2\%) represent the dominant residual error mode, indicating the policy reliably achieves position alignment but struggles with fine rotational precision under the 5.7$^\circ$ threshold. Grasp and transport failures are rare (2.9\%), confirming robust pick-and-place primitives.}
+\label{fig:failure_modes}
+\end{figure}
+
+\subsection{Analysis by Failure Type}
+
+\subsubsection{Rotation-Only Failures (22.2\%)}
+
+The dominant failure mode. The policy consistently achieves translational alignment (position satisfied) but fails rotational precision under the 5.7$^\circ$ threshold. This indicates:
+
+\begin{itemize}
+    \item \textbf{Root Cause}: Insufficient rotational correction in final approach. The policy may prioritise XY/Z alignment over yaw adjustment, or lack fine-grained rotational control authority.
+    \item \textbf{Suggested Improvements}:
+    \begin{itemize}
+        \item Increase rotational reward term weight (current: equal to position terms)
+        \item Add rotational velocity penalty during final alignment (encourage slow, precise yaw adjustments)
+        \item Curriculum learning: train first with relaxed rotation thresholds, then tighten
+    \end{itemize}
+\end{itemize}
+
+\subsubsection{Coarse Misalignment (5.4\%)}
+
+Policy reaches the target vicinity (XY $<$ 100\,mm) but fails to refine alignment below 15\,mm. Likely causes:
+\begin{itemize}
+    \item Local minima in policy: settles into hovering behaviour without final correction
+    \item Action noise or exploration preventing convergence to precise alignment
+    \item Episode timeout before alignment achieved
+\end{itemize}
+
+\subsubsection{Grasp/Transport Failures (2.9\%)}
+
+Early-stage failures where the cube is dropped, never grasped, or grossly misplaced. The low rate (2.9\%) confirms the policy has robustly learned pick-and-place primitives. These failures are likely due to:
+\begin{itemize}
+    \item Stochastic environment variations (initial pose randomization)
+    \item Rare edge cases in gripper kinematics
+    \item Cube slipping from grasp during rapid motion
+\end{itemize}
+
+\subsubsection{Near-Miss Alignment (1.4\%)}
+
+Episodes that came very close (5--15\,mm XY, $<$15$^\circ$ rotation) but narrowly missed thresholds. This small category suggests the policy operates in a bimodal regime: either achieves precise alignment or fails by a larger margin---few episodes land in the "almost there" zone.
+
+\subsubsection{Position-Only Failures (0.2\%)}
+
+Extremely rare (2/1{,}024). The policy almost never achieves strict rotation alignment ($<$5.7$^\circ$) without also achieving position alignment, confirming that translational control is the easier subtask.
+
+\subsection{Implications for Future Work}
+
+\textbf{Priority 1: Rotational Precision}
+
+Rotation-only failures (22.2\%) represent the largest performance bottleneck. Targeted interventions:
+\begin{enumerate}
+    \item Modify reward structure to emphasise rotation during final alignment phase
+    \item Add observation features: rotational velocity, angular momentum
+    \item Investigate action space: does wrist joint have sufficient range/resolution for fine yaw control?
+\end{enumerate}
+
+\textbf{Priority 2: Timeout Management}
+
+95.2\% of episodes reach maximum length, indicating inefficiency. The policy may:
+\begin{itemize}
+    \item Spend excessive time in hovering/oscillation near target
+    \item Lack explicit "commit to placement" behaviour
+    \item Benefit from episode length penalty to encourage faster task completion
+\end{itemize}
+
+Adding a time-based penalty (e.g., $-0.01$ per step after 500 steps) could incentivise decisive placement behaviour.
+
+\textbf{Sim-to-Real Perception Gap}
+
+While grasp failures are rare (2.9\%), real-world deployment with vision-based perception will likely increase this rate due to:
+\begin{itemize}
+    \item Pose estimation errors (3--10\,mm typical for RGB-D systems)
+    \item Occlusion during manipulation
+    \item Lighting variations affecting object detection
+\end{itemize}
+
+Simulation training with observation noise injection (domain randomization) is recommended to improve robustness to perception errors.
+
+\section{Policy Behavior Evaluation}
+Qualitative inspection of trained checkpoints showed consistent grasp-lift-align behaviour, with the dominant residual failures concentrated in the final millimeter-scale placement phase under strict XY thresholds. The policy typically reaches stable pre-stack configurations, but a subset of episodes fail at final translational correction despite acceptable rotational alignment. This observation is consistent with the quantitative gap between position-only and combined success rates in Table~\ref{tab:ablation_final_policies}.
+
+\section{Comparison with Baseline Approaches}
+
+Table~\ref{tab:ablation_final_policies} provides the finalised controlled comparison between baseline reward design, rotation-aware training from scratch, and rotation-aware fine-tuning. Relative to the baseline policy, the final fine-tuned policy improved combined geometric success by 4.44 percentage points (15.94\% $\rightarrow$ 20.38\%) while also improving rotational and translational precision.
+
+The comparison confirms that the largest improvement came from training strategy (checkpoint fine-tuning with long-horizon optimisation), rather than from introducing orientation reward in isolation.
+
+\section{Computational Efficiency Analysis}
+
+One of the primary advantages of GPU-accelerated simulation is the dramatic reduction in training time compared to real-world data collection. This section quantifies the computational benefits of our approach.
+
+\textbf{Training Throughput:}
+\begin{itemize}
+    \item \textbf{Sustained Performance}: 35{,}000 FPS (environment steps per second, aggregated across all 4{,}096 parallel environments) equivalent to approximately 8.5 steps per second per individual environment
+    \item \textbf{Sample Collection Rate}: 131{,}072 environment steps per epoch (32 horizon length $\times$ 4{,}096 envs)
+    \item \textbf{Total Training Time}: Approximately 80--100 hours for 100{,}000 epochs
+    \item \textbf{Total Samples Collected}: 13.11 billion environment steps (131{,}072 $\times$ 100{,}000)
+\end{itemize}
+
+\textbf{Real-World Equivalence:}
+
+If the same policy were trained on a single physical Franka FR3 robot operating continuously at 20\,Hz control frequency:
+\begin{itemize}
+    \item \textbf{Time Required}: 13.11B steps ÷ 20 Hz ÷ 3600 s/hr ÷ 24 hr/day = 20.8 years of continuous operation
+    \item \textbf{Accounting for Episode Resets}: With average episode length of 300 steps (15 seconds) and 10-second reset time, effective throughput reduces to $\sim$12 Hz $\rightarrow$ \textbf{34.6 years}
+    \item \textbf{Practical Constraints}: Including maintenance downtime, hardware failures, and 8-hour work days $\rightarrow$ \textbf{100+ years}
+\end{itemize}
+
+\textbf{Cost Comparison:}
+\begin{itemize}
+    \item \textbf{GPU Training}: 100 hours $\times$ \$0.50/hour electricity + \$0.15/hour GPU depreciation $\approx$ \textbf{\$65}
+    \item \textbf{Real Robot Training}: 34.6 years $\times$ (\$40k robot amortization + \$20k/year maintenance + \$50k/year supervision) $\approx$ \textbf{\$2.4M+}
+    \item \textbf{Speedup Factor}: $>$30{,}000$\times$ faster than real-world training
+\end{itemize}
+
+\textbf{Comparison with CPU-Based Simulation:}
+
+Traditional CPU-based physics simulators (MuJoCo, PyBullet) typically achieve:
+\begin{itemize}
+    \item Single environment: 500--1{,}000 Hz (real-time or faster)
+    \item Parallel environments: Limited by CPU cores (typically 16--64 parallel envs)
+    \item Effective throughput: $\sim$20{,}000 FPS with 32 environments
+\end{itemize}
+
+Our GPU-accelerated approach provides:
+\begin{itemize}
+    \item \textbf{200$\times$ more parallel environments} (4{,}096 vs 32)
+    \item \textbf{1.75$\times$ faster per-environment simulation} despite massively parallel execution
+    \item \textbf{Total speedup}: $\sim$175$\times$ faster than typical CPU-parallel training
+\end{itemize}
+
+\textbf{Implications for Research Accessibility:}
+
+This computational efficiency makes precision manipulation research accessible to academic labs and small research groups:
+\begin{itemize}
+    \item Complete training runs achievable within 48 hours on consumer-grade GPUs
+    \item Rapid iteration on reward structures and hyperparametres (1--2 day turnaround)
+    \item Eliminates the need for expensive robot fleets or extended real-world data collection
+    \item Enables systematic ablation studies that would be prohibitively expensive with real hardware
+\end{itemize}
+
+GPU-accelerated simulation has substantially lowered the barrier to entry for precision manipulation research: training runs that previously required multi-year timescales and substantial capital investment can now be completed within weeks at negligible compute cost, enabling systematic investigation in academic settings.
+
+\chapter{Discussion}
+
+\section{Limitations and Failure Modes}
+
+\subsubsection{Methodological Limitations}
+
+\textbf{Observation Space Idealization:}
+\begin{itemize}
+    \item Current implementation uses ground-truth object positions from PhysX rather than vision-based perception
+    \item Real deployment requires RGB-D camera integration for object detection and 6-DOF pose estimation
+    \item Expected perception errors: 3--10\,mm position accuracy, 5--15$^\circ$ orientation accuracy with state-of-the-art vision systems
+    \item Policy trained on perfect observations may be brittle to perception noise without additional domain randomization
+\end{itemize}
+
+\textbf{Gripper Simplification:}
+\begin{itemize}
+    \item Parallel gripper model omits compliant finger pads present on real Franka gripper
+    \item Simulation uses binary contact detection; real gripper provides continuous force feedback
+    \item No slip detection modelling. Policy cannot detect or recover from grasp failures during transport
+    \item Gripper compliance differences may affect grasp stability on real hardware
+    \item Ablation studies (Section 4.2) show gripper state observations have moderate impact (30\% performance degradation when removed), suggesting some redundancy with proprioceptive information but still contributing to task performance
+\end{itemize}
+
+\textbf{Known System Limitations:}
+\begin{itemize}
+    \item \textbf{Fixed Joint Snap Realism}: Current approach provides deterministic snap rather than modelling true LEGO press-fit forces. Real deployment will require:
+    \begin{itemize}
+        \item Force-torque feedback during insertion
+        \item Compliant control for micro-adjustments
+        \item Success detection from force signatures
+    \end{itemize}
+
+    \item \textbf{Smooth Block Training Geometry}: Fixed joint snap mechanism validated on 5\,cm smooth cubes rather than LEGO-specific geometry. Real LEGO deployment will require:
+    \begin{itemize}
+        \item Visual recognition of LEGO-specific features (studs, orientation)
+        \item Adaptation to smaller object size (4.8\,cm vs 5\,cm)
+        \item Handling of varied brick shapes (2$\times$2, 2$\times$4, specialty pieces)
+    \end{itemize}
+
+    \item \textbf{Tabletop Scene}: Simulated table is static and clear of obstructions. Real assembly scenarios involve more environmental variation in the scene, although this can be minimised.
+
+    \item \textbf{Sim-to-Real Gap}: Despite domain randomization preparations, visual and physical differences between simulation and real FR3 robot remain untested.
+\end{itemize}
+
+\textbf{Observed and Likely Failure Modes:}
+Based on completed smooth-block training and transfer-oriented analysis:
+\begin{itemize}
+    \item \textbf{Grasp Failures}: Parallel gripper may miss small bricks or grasp at unstable contact points
+    \item \textbf{Transport Drops}: Insufficient grip force during rapid arm motion
+    \item \textbf{Alignment Timeouts}: Policy takes too long for final alignment, episode terminates before snap
+    \item \textbf{Premature Snap Exploitation}: If curriculum stays loose too long, policy may exploit lenient thresholds rather than learning precision
+    \item \textbf{Hovering}: Even with stability penalty, some hovering near target may persist
+\end{itemize}
+
+\section{Sim-to-Real Transfer Considerations}
+\label{sec:sim_to_real}
+
+\textbf{Prepared Domain Randomization:}
+\begin{itemize}
+    \item Joint position/velocity noise injection
+    \item Brick position randomization (X: ±10\,cm, Y: ±10\,cm)
+    \item Yaw angle randomization (±1.0 rad)
+    \item Physics parameter variation (mass, friction) - planned but not yet implemented
+    \item Visual randomization (lighting, textures) - planned but not yet implemented
+\end{itemize}
+
+\textbf{Transfer Strategy:}
+For deployment to a real Franka FR3, the transfer strategy is:
+\begin{enumerate}
+    \item \textbf{Initial Zero-Shot}: Test trained policy directly on real hardware with matched workspace setup
+    \item \textbf{Identify Failures}: Categorize sim-to-real gap issues (perception, control, physics)
+    \item \textbf{Targeted Fine-Tuning}: Collect real-world data for failure cases, fine-tune policy with limited additional training
+    \item \textbf{Snap Detection Adaptation}: Replace simulation constraint with real force-torque based success detection
+\end{enumerate}
+
+\textbf{Transfer Challenges:}
+\begin{itemize}
+    \item Camera-based object detection (simulation uses ground-truth positions)
+    \item Gripper compliance differences (real robot more compliant than simulation)
+    \item Contact dynamics (real LEGO friction/deformation vs simplified simulation)
+    \item Workspace calibration (table height, robot base position precision)
+\end{itemize}
+
+\chapter{Conclusion and Future Work}
+
+\section{Summary of Contributions}
+
+This research makes several key contributions to robotic manipulation using reinforcement learning:
+
+\begin{enumerate}
+    \item \textbf{GPU-Accelerated Training Pipeline}: Successfully implemented simple stack task in Isaac Lab, achieving 35,000 FPS training throughput with 4096 parallel environments while resolving bugs in reward calculation, observation systems, and physics configuration.
+
+    \item \textbf{Precision Same-Size Stacking}: Demonstrated robust high-throughput learning for strict geometric stacking with final evaluated performance up to 411.80 mean episode reward and best combined position+rotation success of 20.38\% under XY $<$ 5\,mm and rotation error $<$ 0.1\,rad.
+
+    \item \textbf{LEGO Simulation Challenges Investigation}: Documented why physically accurate LEGO interlocking is infeasible for scalable RL:
+    \begin{itemize}
+        \item Multi-contact instability (20+ simultaneous contacts cause PhysX solver failure)
+        \item Computational intractability (100$\times$ slowdown for acceptable accuracy)
+        \item Reward brittleness (contact flickering prevents gradient flow)
+    \end{itemize}
+
+    \item \textbf{Fixed Joint Constraint Snap Mechanism}: Developed deterministic snap approach that:
+    \begin{itemize}
+        \item Maintains task complexity (sub-centimeter precision, velocity control, multi-object sequencing)
+        \item Enables scalable learning (35k FPS vs. $<$2k FPS with full geometry)
+        \item Provides stable training signal (zero jitter, deterministic behaviour)
+        \item More closely aligned with real deployment (force-torque-based success detection)
+    \end{itemize}
+
+    \item \textbf{Curriculum Learning for Tight Tolerances}: Implemented progressive threshold tightening (2.5\,cm$\rightarrow$1.5\,cm over 5{,}000 epochs) that mitigates premature convergence to low-precision policies while guiding training toward the final precision targets.
+
+    \item \textbf{Multi-Object Task Scaling Analysis}: Comparative 3-cube stacking experiments revealed curriculum learning's role in task complexity scaling:
+    \begin{itemize}
+        \item Without curriculum: Complete learning failure (41.77 reward, only grasping behavior)
+        \item With snap threshold curriculum: 2.3$\times$ improvement (95.45 reward, partial stacking)
+        \item Plateau at 95 reward (vs 411.80 for 2-cube) demonstrates curriculum is necessary but not sufficient
+        \item Findings suggest multi-stage sequential assembly requires staged reward curriculum beyond single-parameter threshold tightening
+    \end{itemize}
+
+    \item \textbf{Reward Structure Exploitation Analysis}: Discovered and resolved critical reward design flaw where policies converged to suboptimal local optima (nudging bricks together) rather than intended manipulation behaviour (picking and stacking). Analysis revealed:
+    \begin{itemize}
+        \item Mathematical root cause: +1.5 reward advantage for picking vs. +7.1 for nudging created systematic exploitation
+        \item Four compounding configuration errors: insufficient brick separation (10\,cm), disproportionate intermediate rewards (5.0 vs. 1.5 for lift), strict lift threshold (6\,mm), and slow action execution (scale=0.5)
+        \item Solution increased picking advantage to 91$\times$ (9.1 vs. 0.1) through rebalanced weights and physical constraints
+        \item Multi-stage manipulation rewards require mathematical analysis to prevent exploitation through task shortcuts
+    \end{itemize}
+
+    \item \textbf{Hierarchical Reward Engineering}: Validated reward structure principles:
+    \begin{itemize}
+        \item 160:1 ratio between task success (16.0) and guidance rewards (0.1)
+        \item Intermediate rewards bridge critical gaps (nearly\_stacked at weight 5.0)
+        \item Global reward scaling of 1.0 preserves carefully designed hierarchies
+    \end{itemize}
+\end{enumerate}
+
+\subsection{Principal Insights and Methodological Contributions}
+
+\textbf{On Simulation Fidelity vs. Learnability:}
+\begin{itemize}
+    \item Physical accuracy can be counterproductive when it introduces instabilities that prevent learning
+    \item Simplified physics with deterministic constraints often superior to unstable ``realistic'' simulation
+    \item Task complexity should come from control precision requirements, not physics noise
+    \item For precision assembly, geometric alignment + constraint-based success detection mirrors real deployment better than continuous contact simulation
+\end{itemize}
+
+\textbf{On Reward Structure Design:}
+\begin{itemize}
+    \item Reward magnitude hierarchy is as important as reward shaping. Task success must dominate (50--200$\times$ larger than guidance)
+    \item Intermediate rewards critical for precision tasks (bridge gaps where gradients vanish)
+    \item Stability penalties reduce emergent undesirable behaviours (hovering, shaking)
+    \item Global reward scaling (reward\_shaper.scale\_value) must preserve carefully tuned ratios
+\end{itemize}
+
+\textbf{On Observation Space Design:}
+\begin{itemize}
+    \item Feature importance hierarchy: proprioception (critical) $>$ end-effector pose (critical) $>$ spatial relationships (critical) $>$ gripper state (moderate) $>$ absolute poses (redundant)
+    \item Spatial relationship features (relative distances) fully substitute for absolute coordinate frames, achieving equal or better performance
+    \item Proprioception cannot be replaced by visual/spatial features---joint state information is essential for manipulation
+    \item Redundancy in observation space (e.g., absolute poses when spatial relationships present) does not degrade performance but increases computational cost
+    \item For sim-to-real transfer, prefer relative features over absolute coordinates to reduce calibration requirements
+\end{itemize}
+
+\textbf{On Training Dynamics:}
+\begin{itemize}
+    \item Physics stability must precede learning, contact jitter destroys gradient flow
+    \item Curriculum learning essential for tight tolerances ($<$2\,cm on 5\,cm objects)
+    \item Training duration matters: precision tasks require 3$\times$ more epochs than coarse manipulation
+    \item Extended horizons beyond 50{,}000 epochs further improved combined geometric performance in fine-tuned runs, reinforcing the value of long-horizon optimisation
+\end{itemize}
+
+\textbf{On Development Methodology:}
+\begin{itemize}
+    \item Validate on simpler benchmarks (smooth blocks) before scaling to complex geometry (LEGO)
+    \item Match proven baselines exactly (IsaacGym) before introducing modifications
+    \item Small configuration errors have large effects (gripper stiffness 2000 vs 5000 = failure vs success)
+    \item Systematic debugging (8 major iterations) essential for discovering subtle issues
+\end{itemize}
+
+\subsection{Future Research Directions}
+\label{sec:future_work}
+
+\textbf{Immediate Validation:}
+\begin{itemize}
+    \item \textbf{Expanded Fine-Tuning Sweep}: Run controlled continuations from the best 100k checkpoint to test whether combined success can be pushed beyond 20.38\% under unchanged thresholds
+    \item \textbf{Reward Component Ablation}: Isolate contribution of individual reward terms (nearly\_stacked, held\_stable, stability\_penalty) and curriculum parametres to validate methodology. Observation space ablation is complete (Section 4.2.1).
+    \item \textbf{3-Cube Staged Reward Curriculum}: Building on Section 4.4 findings, implement staged reward enabling (activate stage-2 rewards only after stage-1 reliability threshold) to address multi-stage sequential assembly complexity
+\end{itemize}
+
+\textbf{Sim-to-Real Transfer:}
+\begin{itemize}
+    \item \textbf{Domain Randomization}: Implement visual (lighting, textures), physical (mass, friction, dynamics), and observation noise randomization to strengthen transfer robustness
+    \item \textbf{Real Hardware Deployment}: Validate policies on Franka Emika FR3 with force-torque feedback replacing snap constraint, compliant control for error tolerance, and visual servoing for alignment refinement
+    \item \textbf{Alternative Control Modes}: Compare joint position control vs operational space control (OSC) for precision placement tasks
+\end{itemize}
+
+\textbf{Extensions to Precision Assembly:}
+\begin{itemize}
+    \item \textbf{LEGO Assembly with Real Hardware}: Following Section 3.12 findings, pursue real-world learning or hybrid sim-to-real with constraint-based simulation initialisation.
+    \item \textbf{Vision-Based Policies}: Replace state-based observations with RGB-D input for generalizable perception across object geometries
+    \item \textbf{Hierarchical Policy Decomposition}: Investigate skill-based approaches (reach, grasp, transport, place) with high-level sequencing for improved sample efficiency
+    \item \textbf{Broader Applications}: Apply validated methodology to other manipulation tasks (electronics assembly, precision instrumentation etc.)
+\end{itemize}
+
+\bibliographystyle{plain}
+\bibliography{refs}
+
+\end{document}
